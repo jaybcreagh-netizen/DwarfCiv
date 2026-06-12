@@ -124,6 +124,14 @@ def embark(client: DFHackClient) -> None:
     step(client, "Fortress",
          lambda: get_screen_class(client) == "viewscreen_choose_start_sitest",
          timeout=120)
+    # Decline the "Quick start and short tutorial?" offer (we want our own
+    # deterministic site, not the tutorial's).
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if client.screen_has("short tutorial?"):
+            client.click_text("Abort")
+            break
+        time.sleep(1)
     dismiss_popups(client)
 
     rx, ry = EMBARK_REGION

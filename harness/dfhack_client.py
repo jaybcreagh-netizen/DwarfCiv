@@ -52,6 +52,17 @@ class DFHackClient:
     def start(self) -> None:
         if self.is_alive():
             return
+        # A leftover DF from a previous run would hold the RPC port and
+        # silently receive all our commands; fail fast instead.
+        try:
+            self.run_command("lua", "print(1)", timeout=10)
+        except DFError:
+            pass
+        else:
+            raise DFError(
+                f"another DFHack instance is already serving port {self.port}; "
+                "stop it first (pkill -x dwarfort) or use a different "
+                "DFHACK_PORT")
         env = os.environ.copy()
         env.update({
             "DFHACK_HEADLESS": "1",

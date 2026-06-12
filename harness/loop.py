@@ -42,12 +42,14 @@ POLL_INTERVAL = 3.0
 
 class Run:
     def __init__(self, df_dir: Path, run_dir: Path, months: int,
-                 ticks_per_month: int, resume_from: Path | None):
+                 ticks_per_month: int, resume_from: Path | None,
+                 export_legends_at_end: bool = True):
         self.df_dir = df_dir
         self.run_dir = run_dir
         self.months = months
         self.ticks_per_month = ticks_per_month
         self.resume_from = resume_from
+        self.export_legends_at_end = export_legends_at_end
         self.client = DFHackClient(df_dir, log_path=run_dir / "df.log")
         self.tailer = GamelogTailer(df_dir / "gamelog.txt")
         self.ledger = Ledger(run_dir / "ledger.jsonl")
@@ -189,7 +191,63 @@ class Run:
                 log.error("month %d failed (%s); recovering from last snapshot",
                           month, e)
                 self.recover()
+        if self.export_legends_at_end:
+            try:
+                self.export_legends()
+            except (DFError, OSError) as e:
+                log.error("legends export failed (non-fatal): %s — see "
+                          "README for the manual procedure", e)
         log.info("run complete: %s", self.run_dir)
+
+    def export_legends(self) -> None:
+        """Export Legends XML from the live fort via open-legends.
+
+        open-legends taints the session (mode switches lose data), which is
+        why this runs only after the final snapshot: the tainted session is
+        simply discarded — DF auto-quits when legends mode is closed, and we
+        never save afterwards.
+        """
+        log.info("exporting legends XML (this discards the live session)")
+        before = set(self._legends_files())
+        self.client.run_command("open-legends")
+        # Confirm the open-legends warning screen.
+        self.client.wait_for(
+            "open-legends warning screen",
+            lambda: "open-legends" in self.client.get_focus(), timeout=30)
+        self.client.lua(
+            "require('gui').simulateInput("
+            "dfhack.gui.getCurViewscreen(), 'CUSTOM_ALT_L')")
+        time.sleep(5)
+        self.client.run_command("exportlegends", timeout=120)
+        new_files: set = set()
+
+        def export_done():
+            nonlocal new_files
+            new_files = set(self._legends_files()) - before
+            if not new_files:
+                return False
+            # consider done when sizes are stable for one poll
+            sizes = {f: f.stat().st_size for f in new_files}
+            time.sleep(4)
+            return all(f.stat().st_size == sizes[f] for f in new_files)
+
+        self.client.wait_for("legends export files", export_done,
+                             timeout=900, interval=5)
+        dest = self.run_dir / "legends"
+        dest.mkdir(exist_ok=True)
+        for f in new_files:
+            shutil.move(str(f), dest / f.name)
+            log.info("legends artifact: %s", dest / f.name)
+        self.client.stop(graceful=False)  # session is tainted; never save it
+
+    def _legends_files(self) -> list[Path]:
+        pats = ("*legends*.xml", "*legends*.xml.gz", "*-world_sites_and_pops.txt",
+                "*-world_gen_param.txt")
+        found: list[Path] = []
+        for d in (self.df_dir, self.df_dir / "save" / SAVE_FOLDER):
+            for p in pats:
+                found.extend(d.glob(p))
+        return found
 
     def collect_state(self) -> dict:
         state = self.client.run_json_script("obs-state", timeout=120)
@@ -250,6 +308,8 @@ def main() -> None:
     ap.add_argument("--resume-from", default=None,
                     help="snapshot dir to resume from instead of the pristine "
                          "start save (e.g. runs/<id>/snapshots/month-002)")
+    ap.add_argument("--skip-legends", action="store_true",
+                    help="skip the legends XML export at run end")
     args = ap.parse_args()
 
     run_name = args.run_name or datetime.now(timezone.utc).strftime(
@@ -265,7 +325,8 @@ def main() -> None:
 
     run = Run(Path(args.df_dir).resolve(), run_dir, args.months,
               args.ticks_per_month,
-              Path(args.resume_from).resolve() if args.resume_from else None)
+              Path(args.resume_from).resolve() if args.resume_from else None,
+              export_legends_at_end=not args.skip_legends)
     try:
         run.run()
     finally:
