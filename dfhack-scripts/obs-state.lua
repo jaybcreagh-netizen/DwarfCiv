@@ -201,11 +201,18 @@ section('mandates', function()
 end)
 
 section('petitions', function()
+    -- Approximate: open agreements that name our fort entity as a party
+    -- (petitions to the fort, guild/temple requests, ...).
+    local us = df.global.plotinfo.group_id
     local n = 0
     for _, agr in ipairs(df.global.world.agreements.all) do
-        local d = agr.details
-        if #d > 0 and not agr.flags.convicted_accepted
-            and not agr.flags.petition_not_accepted then
+        local involves_us = false
+        for _, party in ipairs(agr.parties) do
+            for _, eid in ipairs(party.entity_ids) do
+                if eid == us then involves_us = true end
+            end
+        end
+        if involves_us and not agr.flags.convicted_accepted then
             n = n + 1
         end
     end
