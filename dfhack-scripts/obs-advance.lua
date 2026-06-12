@@ -33,6 +33,33 @@ local function date_table()
     }
 end
 
+-- Find and click a button by its rendered label. Some v50 popups (e.g. the
+-- embark arrival story) keep focus at dwarfmode/Default while still
+-- blocking the simulation, so focus checks alone cannot detect them.
+local function click_label(target)
+    local sw, sh = dfhack.screen.getWindowSize()
+    for y = 0, sh - 1 do
+        local line = {}
+        for x = 0, sw - 1 do
+            local pen = dfhack.screen.readTile(x, y)
+            local ch = pen and pen.ch or 32
+            if ch < 32 or ch > 126 then ch = 32 end
+            line[#line + 1] = string.char(ch)
+        end
+        local i = table.concat(line):find(target, 1, true)
+        if i then
+            local cx = i - 1 + #target // 2
+            df.global.gps.mouse_x = cx
+            df.global.gps.precise_mouse_x = cx * df.global.gps.tile_pixel_x
+            df.global.gps.mouse_y = y
+            df.global.gps.precise_mouse_y = y * df.global.gps.tile_pixel_y
+            gui.simulateInput(dfhack.gui.getCurViewscreen(), '_MOUSE_L')
+            return true
+        end
+    end
+    return false
+end
+
 local focus = table.concat(dfhack.gui.getFocusStrings(
     dfhack.gui.getCurViewscreen()), ',')
 local status = {
@@ -50,11 +77,13 @@ if target then
         df.global.pause_state = true
         status.action = 'paused_at_target'
     else
-        -- A popup (e.g. megabeast announcement) blocks sim progress and
-        -- shifts focus away from dwarfmode/Default. Nudge it closed.
+        -- Popups block sim progress. Story/announcement popups keep focus
+        -- at dwarfmode/Default, so also sweep for an on-screen Okay button.
         if status.fortress_mode and not focus:find('dwarfmode/Default', 1, true) then
             gui.simulateInput(dfhack.gui.getCurViewscreen(), 'LEAVESCREEN')
-            status.action = 'dismissed_popup:' .. focus
+            status.action = 'dismissed_screen:' .. focus
+        elseif click_label('Okay') then
+            status.action = 'dismissed_popup'
         elseif df.global.pause_state then
             df.global.pause_state = false
             status.action = 'unpaused'

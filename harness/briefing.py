@@ -199,7 +199,11 @@ def render_markdown(briefing: dict) -> str:
             flags.append("child")
         flag_s = f" — {'; '.join(flags)}" if flags else ""
         job = f" (now: {d['current_job']})" if d.get("current_job") else ""
-        add(f"- {d.get('name')} — {d.get('profession')}{job}{flag_s}")
+        # getReadableName already ends with the profession; don't repeat it.
+        name = d.get("name") or "?"
+        prof = d.get("profession") or ""
+        name_s = name if prof and name.endswith(prof) else f"{name} — {prof}"
+        add(f"- {name_s}{job}{flag_s}")
     add("")
 
     errors = briefing.get("state_errors") or []

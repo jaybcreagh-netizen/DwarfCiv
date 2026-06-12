@@ -8,9 +8,10 @@ World recipe (see README "The pinned world"):
   - preset: POCKET REGION (17x17, 5 civs, site cap 18, 250 max years)
   - seeds:  SEED=dwarfciv  HISTORY_SEED=dwarfciv-history
             NAME_SEED=dwarfciv-names  CREATURE_SEED=dwarfciv-creatures
-  - embark: region tile (8,8), local rect (6,6)-(9,9) [4x4], default
-    "Play now" loadout, warnings bypassed via warn_flags.GENERIC
-    (the gui/embark-anywhere technique).
+  - embark: mid-level coords (81,115)-(84,118) = region tile (5,7),
+    placed through DF's own Embark-button -> map-click -> Confirm flow
+    (writing location fields directly corrupts the site; see README
+    "Known flakiness"), default "Play now" loadout.
 
 Usage: python -m setup.make_world [--df-dir df]
 """
@@ -39,8 +40,12 @@ SEEDS = {
     "creature_seed": "dwarfciv-creatures",
 }
 PRESET_TITLE = "POCKET REGION"
-EMBARK_REGION = (8, 8)        # region tile on the 17x17 world map
-EMBARK_RECT = (6, 6, 9, 9)    # local 4x4 rect within the 16x16 region tile
+# Embark site in mid-level coordinates (region_tile*16 + local_tile, on a
+# 17x17 world = 0..271). (81,115) = region (5,7), local (1,3); the default
+# 4x4 rectangle lands on (81,115)-(84,118): a forested, river-less valley
+# with murky pools ("Water might need to be pumped out" is the only embark
+# warning). Found empirically; deterministic for the pinned world.
+EMBARK_MID_COORDS = (81, 115)
 
 
 def get_screen_class(client: DFHackClient) -> str:
@@ -145,35 +150,77 @@ def embark(client: DFHackClient) -> None:
             break
         time.sleep(1)
 
-    rx, ry = EMBARK_REGION
-    x0, y0, x1, y1 = EMBARK_RECT
-    # Position the embark and force the confirmation panel to appear.
-    # Setting warn_flags.GENERIC makes the accept-embark panel show
-    # unconditionally (technique from DFHack's gui/embark-anywhere).
-    client.lua(f"""
-        local scr = dfhack.gui.getCurViewscreen()
-        scr.location.region_pos.x = {rx}
-        scr.location.region_pos.y = {ry}
-        scr.location.embark_pos_min.x = {x0}
-        scr.location.embark_pos_min.y = {y0}
-        scr.location.embark_pos_max.x = {x1}
-        scr.location.embark_pos_max.y = {y1}
-        scr.zoom_cent_x = {rx}
-        scr.zoom_cent_y = {ry}
-        scr.zoomed_in = true
-        scr.choosing_embark = true
-        scr.warn_flags.GENERIC = true
-        print("embark site set")
-    """)
-    time.sleep(2)
-    # The accept-embark warning panel's button is labeled "Confirm" in 53.x.
-    _click_first(client, ["Embark anyway", "Embark!", "Confirm"],
-                 lambda: get_screen_class(client) == "viewscreen_setupdwarfgamest",
-                 timeout=300)
+    enter_embark_placement(client)
+    place_and_confirm(client)
     dismiss_popups(client)
-    _click_first(client, ["Play now"], lambda: _in_fort_mode(client),
+    _click_first(client, ["Play now!"], lambda: _in_fort_mode(client),
                  timeout=600)
     log.info("embarked; fortress mode is live")
+
+
+def enter_embark_placement(client: DFHackClient) -> None:
+    """Click the bottom-bar Embark button to enter rectangle-placement mode.
+
+    The site screen's bottom-bar buttons and the map itself are frame-polled
+    (not fed through viewscreen feed()), so gui.simulateInput clicks are
+    invisible to them. obs-mapclick pins the cursor + button state across
+    real frames instead. The button label is located bottom-up because the
+    instruction text above also contains the word "Embark".
+    """
+    coords = None
+    for y, line in reversed(list(enumerate(client.screen_text()))):
+        i = line.find("Embark")
+        if i >= 0:
+            coords = (i + 3, y)
+            break
+    if not coords:
+        raise DFError("no Embark button on site screen")
+    client.run_command("obs-mapclick", str(coords[0]), str(coords[1]))
+    client.wait_for(
+        "embark placement mode",
+        lambda: client.lua(
+            "print(dfhack.gui.getCurViewscreen().choosing_embark)"
+        ).strip().endswith("true"),
+        timeout=30)
+
+
+def place_and_confirm(client: DFHackClient) -> None:
+    """Center the view on the pinned site and click it.
+
+    zoom_cent is in mid-level coordinates (region*16 + local tile). A click
+    on a valid spot immediately opens the warnings/Confirm panel; on an
+    invalid spot it just re-places the rectangle, which we detect and fail
+    loudly on (the pinned site is known-valid for the pinned world).
+    """
+    cx, cy = EMBARK_MID_COORDS
+    client.lua(f"local s=dfhack.gui.getCurViewscreen() "
+               f"s.zoom_cent_x={cx} s.zoom_cent_y={cy} print('centered')")
+    time.sleep(1)
+    sw, sh = _window_size(client)
+    pane = (sw // 2, sh // 2 - 2)   # where zoom_cent renders (150x66 -> 75,31)
+    for attempt in range(3):
+        client.run_command("obs-mapclick", str(pane[0]), str(pane[1]))
+        try:
+            client.wait_for("embark confirm panel",
+                            lambda: client.screen_has("Confirm"), timeout=15)
+            break
+        except DFError:
+            if attempt == 2:
+                raise DFError(
+                    "embark click did not open the Confirm panel; site "
+                    "tile may be invalid for this world:\n"
+                    + "\n".join(client.screen_text()))
+    client.click_text("Confirm")
+    client.wait_for(
+        "embark prep screen",
+        lambda: get_screen_class(client) == "viewscreen_setupdwarfgamest",
+        timeout=300)
+
+
+def _window_size(client: DFHackClient) -> tuple[int, int]:
+    out = client.lua("print(dfhack.screen.getWindowSize())")
+    parts = [p for p in out.split() if p.strip().isdigit()]
+    return int(parts[0]), int(parts[1])
 
 
 def _click_first(client: DFHackClient, labels: list[str], pred,
