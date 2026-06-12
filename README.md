@@ -54,10 +54,12 @@ pristine copy of the embark save at `saves/dwarfciv-start/`:
 - History ends early (around year 30) when the pocket world hits the
   megabeast-percentage stop condition — deterministic, and plenty for a
   pocket world.
-- Embark: region tile **(8,8)** (center of the 17×17 world map), local
-  rectangle **(6,6)–(9,9)** (4×4 tiles), **default "Play now" loadout**
-  (7 dwarves, standard supplies). Embark warnings are bypassed via the
-  `warn_flags.GENERIC` technique from DFHack's `gui/embark-anywhere`.
+- Embark: mid-level coordinates **(81,115)–(84,118)** (region tile (5,7),
+  local tile (1,3), default 4×4 size) — a forested valley whose only embark
+  warning is murky pools. **Default "Play now" loadout** (7 dwarves,
+  standard supplies). The site is selected through DF's own UI flow
+  (Embark button → map click → Confirm) driven by frame-pinned synthetic
+  mouse input; see design notes.
 
 Identical inputs ⇒ identical world: DF's worldgen reject/retry sequence is
 itself deterministic for fixed seeds and parameters. To regenerate from
@@ -148,6 +150,16 @@ less battle-tested upstream; if it proves flaky, run the same harness under
 `xvfb-run` with a graphical PRINT_MODE (no code changes needed — the screen
 reader works either way).
 
+**Two kinds of clicks.** Menu-style screens (title, worldgen, popups) handle
+input synchronously through `viewscreen:feed()`, so `gui.simulateInput` with
+`_MOUSE_L` works. But the embark screen's map and bottom-bar buttons are
+*frame-polled*: DF reads `enabler.mouse_lbut`/`gps.mouse_*` during its frame
+logic, `simulateInput` reverts the button flags before any frame runs, and
+headless DF resets `gps.mouse_*` to −1 every frame (no real SDL mouse). For
+those, `obs-mapclick.lua` pins cursor + button state across several real
+frames (press, hold, release) via `dfhack.timeout(1, 'frames', ...)`. This
+distinction cost a day of debugging; respect it.
+
 **Advancing time.** There is no "step N ticks" API in DF. `advance` works by
 unpausing and polling (`obs-advance.lua`, every ~3 s): each poll reports
 `cur_year*403200 + cur_year_tick`, dismisses any popup that has pulled focus
@@ -213,6 +225,13 @@ FPS).
   similar pointer arrays) by computed offsets from Lua — we hit a segfault
   doing exactly that during development. Stick to fields validated against
   df-structures and screen-reads.
+- **Never write `viewscreen_choose_start_sitest.location` directly.** The
+  embark "works" but the site is registered without DF's own bookkeeping
+  (mid-map rect etc.); the resulting fort crashes the sim within seconds
+  (`errorlog.txt`: "Midmap effective coordinate check out of bounds: -1 -1").
+  Always go through the Embark button → map click → Confirm path.
+- **`location.embark_pos_*` are mid-level coordinates** (region·16+local,
+  0–271 on a pocket world), not 0–15 local tiles.
 
 ## References
 
