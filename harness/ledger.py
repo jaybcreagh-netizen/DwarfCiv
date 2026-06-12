@@ -60,8 +60,12 @@ EVENT_PATTERNS: list[tuple[str, re.Pattern]] = [
         r"attacks the|strikes at|charges at|has been knocked unconscious|"
         r"interrupted by|is fighting", re.I)),
     ("season", re.compile(
-        r"^(spring|summer|autumn|winter) has (arrived|come)", re.I)),
-    ("weather", re.compile(r"it has started raining|a snow storm has", re.I)),
+        r"^(spring|summer|autumn|winter) has (arrived|come)|"
+        r"^it is now (spring|summer|autumn|winter)|"
+        r"^the (first|fortress) .*(year|winter)", re.I)),
+    ("weather", re.compile(
+        r"it has started raining|a snow storm has|"
+        r"the weather has cleared|it is raining", re.I)),
     ("job_cancel", re.compile(r"cancels |needs .* but there (is|are) none", re.I)),
     ("petition", re.compile(r"petition", re.I)),
 ]
