@@ -85,7 +85,7 @@ class Run:
         src = self.df_dir / "save" / SAVE_FOLDER
         dest = self.run_dir / "snapshots" / f"month-{month:03d}" / SAVE_FOLDER
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest)
+        shutil.copytree(src, dest, dirs_exist_ok=True)
         self.last_snapshot = dest.parent
         log.info("snapshot written: %s", dest.parent)
         return dest.parent
@@ -277,7 +277,6 @@ class Run:
                        state: dict | None = None) -> None:
         if state is None:
             state = self.collect_state()
-            self.prev_state = self.prev_state or None
         b = briefing_mod.build(state, events, self.prev_state, month)
         json_path, md_path = briefing_mod.write_briefing(self.run_dir, month, b)
         log.info("briefing written: %s", md_path)

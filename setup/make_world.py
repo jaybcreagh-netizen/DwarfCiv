@@ -125,14 +125,25 @@ def embark(client: DFHackClient) -> None:
          lambda: get_screen_class(client) == "viewscreen_choose_start_sitest",
          timeout=120)
     # Decline the "Quick start and short tutorial?" offer (we want our own
-    # deterministic site, not the tutorial's).
-    deadline = time.monotonic() + 20
+    # deterministic site, not the tutorial's), and sweep info popups. The
+    # dialog can lag the screen change, so keep sweeping until the screen
+    # has been free of both for a few seconds.
+    deadline = time.monotonic() + 25
+    quiet_since = time.monotonic()
     while time.monotonic() < deadline:
-        if client.screen_has("short tutorial?"):
-            client.click_text("Abort")
+        clicked = False
+        for label in ("Abort", "Okay"):
+            if client.screen_has(label):
+                try:
+                    client.click_text(label, retry_for=0)
+                    clicked = True
+                except DFError:
+                    pass  # vanished between the check and the click
+        if clicked:
+            quiet_since = time.monotonic()
+        elif time.monotonic() - quiet_since > 5:
             break
         time.sleep(1)
-    dismiss_popups(client)
 
     rx, ry = EMBARK_REGION
     x0, y0, x1, y1 = EMBARK_RECT
@@ -155,7 +166,8 @@ def embark(client: DFHackClient) -> None:
         print("embark site set")
     """)
     time.sleep(2)
-    _click_first(client, ["Embark anyway", "Embark!", "Embark"],
+    # The accept-embark warning panel's button is labeled "Confirm" in 53.x.
+    _click_first(client, ["Embark anyway", "Embark!", "Confirm"],
                  lambda: get_screen_class(client) == "viewscreen_setupdwarfgamest",
                  timeout=300)
     dismiss_popups(client)
@@ -234,6 +246,13 @@ def main() -> None:
         start_worldgen(client)
         embark(client)
         dest = save_and_archive(client, df_dir)
+    except DFError:
+        try:
+            log.error("failure screen dump:\n%s",
+                      "\n".join(client.screen_text()))
+        except DFError:
+            pass
+        raise
     finally:
         client.stop()
     print(f"\nDone. Pristine start save: {dest}")
