@@ -1,0 +1,2 @@
+# No third-party Python dependencies in phase 1.
+# The harness uses only the standard library + the dfhack-run CLI bundled with DFHack.
