@@ -132,7 +132,7 @@ def embark(client: DFHackClient) -> None:
     quiet_since = time.monotonic()
     while time.monotonic() < deadline:
         clicked = False
-        for label in ("Abort", "Okay"):
+        for label in ("Skip tutorial", "Okay"):
             if client.screen_has(label):
                 try:
                     client.click_text(label, retry_for=0)
@@ -209,11 +209,17 @@ def _in_fort_mode(client: DFHackClient) -> bool:
 def save_and_archive(client: DFHackClient, df_dir: Path) -> Path:
     client.set_paused(True)
     client.quicksave()
+    # quicksave is asynchronous; the request flag clears when DF has saved.
+    client.wait_for(
+        "quicksave to complete",
+        lambda: client.lua(
+            "print(df.global.plotinfo.main.autosave_request)").strip() == "false",
+        timeout=600, interval=2)
     time.sleep(5)
     folder = client.save_folder()
     src = df_dir / "save" / folder
-    client.wait_for("save written", lambda: (src / "world.sav").exists() or
-                    any(src.glob("*.sav")), timeout=300)
+    if not src.exists() or not any(src.iterdir()):
+        raise DFError(f"save folder missing or empty after quicksave: {src}")
     client.stop()
 
     dest = REPO_ROOT / "saves" / "dwarfciv-start"
