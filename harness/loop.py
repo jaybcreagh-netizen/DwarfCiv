@@ -62,30 +62,33 @@ class Run:
         if not source.exists():
             raise DFError(f"start save not found: {source} "
                           "(run python -m setup.make_world first)")
-        dest = self.df_dir / "save" / SAVE_FOLDER
-        log.info("restoring save %s -> %s", source, dest)
-        if dest.exists():
-            shutil.rmtree(dest)
-        dest.parent.mkdir(exist_ok=True)
         src = source / SAVE_FOLDER if (source / SAVE_FOLDER).exists() else source
+        if not (src / "world.sav").exists():
+            raise DFError(f"{src} has no world.sav — not a continuable game "
+                          "save (regenerate with python -m setup.make_world)")
+        # Wipe save/ completely: the title's "Continue active game" loads the
+        # most recent session save it can find, so leftovers from previous
+        # runs (autosave N folders) would hijack the load.
+        save_root = self.df_dir / "save"
+        if save_root.exists():
+            shutil.rmtree(save_root)
+        dest = save_root / SAVE_FOLDER
+        log.info("restoring save %s -> %s", src, dest)
         shutil.copytree(src, dest)
 
     def snapshot(self, month: int) -> Path:
         self.client.set_paused(True)
-        self.client.quicksave()
-        # quicksave is asynchronous: wait for the request flag to clear,
-        # then give the writer a moment to finish.
-        self.client.wait_for(
-            "quicksave to complete",
-            lambda: self.client.lua(
-                "print(df.global.plotinfo.main.autosave_request)"
-            ).strip() == "false",
-            timeout=600, interval=2)
-        time.sleep(5)
-        src = self.df_dir / "save" / SAVE_FOLDER
+        src = self.client.quicksave_to_folder()
+        # Store under the canonical folder name so --resume-from works.
         dest = self.run_dir / "snapshots" / f"month-{month:03d}" / SAVE_FOLDER
+        if dest.exists():
+            shutil.rmtree(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest, dirs_exist_ok=True)
+        shutil.copytree(src, dest)
+        # Drop the "autosave N" folder DF just created: leftovers would be
+        # picked up by "Continue active game" on the next boot/recovery.
+        if src.name != SAVE_FOLDER:
+            shutil.rmtree(src)
         self.last_snapshot = dest.parent
         log.info("snapshot written: %s", dest.parent)
         return dest.parent

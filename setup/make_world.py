@@ -167,6 +167,15 @@ def enter_embark_placement(client: DFHackClient) -> None:
     real frames instead. The button label is located bottom-up because the
     instruction text above also contains the word "Embark".
     """
+    # Zoom the view onto the target site first: the Embark button only
+    # exists on the zoomed-in local map. zoom_cent/zoomed_in are pure view
+    # state and safe to set directly (unlike scr.location!).
+    cx, cy = EMBARK_MID_COORDS
+    client.lua(f"local s=dfhack.gui.getCurViewscreen() "
+               f"s.zoom_cent_x={cx} s.zoom_cent_y={cy} s.zoomed_in=true "
+               f"print('zoomed')")
+    client.wait_for_text("Embark", timeout=30)
+
     coords = None
     for y, line in reversed(list(enumerate(client.screen_text()))):
         i = line.find("Embark")
@@ -254,19 +263,15 @@ def _in_fort_mode(client: DFHackClient) -> bool:
 
 
 def save_and_archive(client: DFHackClient, df_dir: Path) -> Path:
+    """Quicksave the fresh fort and archive the resulting session save.
+
+    The continuable game save (world.sav) lands in a NEW "autosave N"
+    folder, not in region1 (which keeps only the embark-time world.dat) —
+    see DFHackClient.quicksave_to_folder. The archive therefore contains
+    world.sav and is what "Continue active game" loads.
+    """
     client.set_paused(True)
-    client.quicksave()
-    # quicksave is asynchronous; the request flag clears when DF has saved.
-    client.wait_for(
-        "quicksave to complete",
-        lambda: client.lua(
-            "print(df.global.plotinfo.main.autosave_request)").strip() == "false",
-        timeout=600, interval=2)
-    time.sleep(5)
-    folder = client.save_folder()
-    src = df_dir / "save" / folder
-    if not src.exists() or not any(src.iterdir()):
-        raise DFError(f"save folder missing or empty after quicksave: {src}")
+    src = client.quicksave_to_folder()
     client.stop()
 
     dest = REPO_ROOT / "saves" / "dwarfciv-start"
@@ -274,7 +279,7 @@ def save_and_archive(client: DFHackClient, df_dir: Path) -> Path:
         shutil.rmtree(dest)
     dest.parent.mkdir(exist_ok=True)
     shutil.copytree(src, dest)
-    log.info("pristine save archived at %s", dest)
+    log.info("pristine save archived at %s (from %s)", dest, src.name)
     return dest
 
 

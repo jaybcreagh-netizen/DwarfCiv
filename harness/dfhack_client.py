@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import time
@@ -237,23 +236,38 @@ class DFHackClient:
             "print(df.global.cur_year * 403200 + df.global.cur_year_tick)")
         return int(out.strip())
 
-    def quicksave(self) -> None:
-        """Save the game in place (fort mode only)."""
-        self.run_command("quicksave", timeout=300)
+    def quicksave_to_folder(self, timeout: float = 600) -> Path:
+        """Quicksave and return the save folder holding the fresh world.sav.
 
-    def save_folder(self) -> str:
-        return self.lua("print(df.global.world.cur_savegame.save_dir)").strip()
-
-    def snapshot_save(self, dest: Path) -> Path:
-        """Copy the current save folder to dest (call right after quicksave)."""
-        folder = self.save_folder()
-        src = self.df_dir / "save" / folder
-        if not src.exists():
-            # DF v50+ keeps saves under save/<folder>
-            raise DFError(f"save folder not found: {src}")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest, dirs_exist_ok=True)
-        return dest
+        v50 save semantics (learned the hard way): in-session saves are
+        written to a NEW folder ("autosave N") containing world.sav — the
+        original region folder keeps only the embark-time world.dat, which
+        is NOT a continuable game. Only folders with world.sav show up as
+        "Continue active game" on the title screen. The autosave_request
+        flag is useless as a completion signal; watch the filesystem.
+        """
+        save_root = self.df_dir / "save"
+        t0 = time.time()
+        self.run_command("quicksave", timeout=60)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.check_alive()
+            try:
+                # save/current is the transient staging area; the finished
+                # save is moved to its real folder ("autosave N").
+                fresh = [p for p in save_root.glob("*/world.sav")
+                         if p.parent.name != "current"
+                         and p.stat().st_mtime >= t0 - 1]
+                if fresh:
+                    p = max(fresh, key=lambda p: p.stat().st_mtime)
+                    size = p.stat().st_size
+                    time.sleep(4)
+                    if p.stat().st_size == size:
+                        return p.parent
+            except FileNotFoundError:
+                pass  # a candidate vanished mid-check; rescan
+            time.sleep(2)
+        raise DFError("quicksave did not produce a world.sav save folder")
 
 
 def _strip_ansi(s: str) -> str:

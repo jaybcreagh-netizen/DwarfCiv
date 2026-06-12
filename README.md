@@ -62,8 +62,15 @@ pristine copy of the embark save at `saves/dwarfciv-start/`:
   mouse input; see design notes.
 
 Identical inputs ⇒ identical world: DF's worldgen reject/retry sequence is
-itself deterministic for fixed seeds and parameters. To regenerate from
-scratch: `rm -rf df/save saves/dwarfciv-start && python -m setup.make_world`.
+itself deterministic for fixed seeds and parameters (verified: repeated
+generations produce the same world, "Thur Num / The Universes of Wind").
+One caveat: the *embark-time* RNG (fort name, expedition member identities)
+is not controlled by the worldgen seeds, so regenerating produces the same
+world and site but a differently-named expedition. The **canonical starting
+point is therefore the archived save itself** (`saves/dwarfciv-start/`,
+~1 MB) — keep it; every run restores from it bit-identically. Regenerate
+from scratch only if you accept a new (equivalent) starting party:
+`rm -rf df/save saves/dwarfciv-start && python -m setup.make_world`.
 
 ## Running
 
