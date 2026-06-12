@@ -167,7 +167,9 @@ class DFHackClient:
             self.run_command(script, str(out_path), *args, timeout=timeout)
             if not out_path.exists():
                 raise DFError(f"{script} produced no output file")
-            with open(out_path) as f:
+            # The Lua side converts DF's CP437 strings to UTF-8, but be
+            # tolerant of any byte that slips through unconverted.
+            with open(out_path, encoding="utf-8", errors="replace") as f:
                 return json.load(f)
         finally:
             out_path.unlink(missing_ok=True)

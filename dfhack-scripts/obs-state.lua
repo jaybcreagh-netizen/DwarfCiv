@@ -5,6 +5,12 @@
 
 local json = require('json')
 
+-- DF strings are CP437; convert to UTF-8 for the JSON boundary.
+local function U(s)
+    if type(s) == 'string' then return dfhack.df2utf(s) end
+    return s
+end
+
 local out_path = ({...})[1]
 if not out_path then qerror('usage: obs-state <output.json>') end
 
@@ -48,7 +54,7 @@ end)
 section('fort', function()
     local site = dfhack.world.getCurrentSite()
     state.fort = {
-        site_name = site and dfhack.translation.translateName(site.name, true) or nil,
+        site_name = site and U(dfhack.translation.translateName(site.name, true)) or nil,
         group_id = df.global.plotinfo.group_id,
         civ_id = df.global.plotinfo.civ_id,
     }
@@ -66,8 +72,8 @@ section('dwarves', function()
         if dfhack.units.isCitizen(u, true) then
             local entry = {
                 id = u.id,
-                name = dfhack.units.getReadableName(u),
-                profession = dfhack.units.getProfessionName(u),
+                name = U(dfhack.units.getReadableName(u)),
+                profession = U(dfhack.units.getProfessionName(u)),
                 stress_category = dfhack.units.getStressCategory(u),
                 stress_label = STRESS_LABEL[dfhack.units.getStressCategory(u)]
                     or tostring(dfhack.units.getStressCategory(u)),
@@ -77,7 +83,7 @@ section('dwarves', function()
                 entry.strange_mood = df.mood_type[u.mood]
             end
             local job = u.job.current_job
-            entry.current_job = job and dfhack.job.getName(job) or nil
+            entry.current_job = job and U(dfhack.job.getName(job)) or nil
             list[#list + 1] = entry
         end
     end
@@ -137,7 +143,7 @@ section('threats', function()
             and not dfhack.units.isDead(u) then
             hostiles[#hostiles + 1] = {
                 id = u.id,
-                name = dfhack.units.getReadableName(u),
+                name = U(dfhack.units.getReadableName(u)),
                 invader = dfhack.units.isInvader(u),
                 great_danger = dfhack.units.isGreatDanger(u),
             }
@@ -168,8 +174,8 @@ section('squads', function()
                 end
                 squads[#squads + 1] = {
                     id = squad_id,
-                    name = dfhack.translation.translateName(sq.name, true),
-                    alias = sq.alias,
+                    name = U(dfhack.translation.translateName(sq.name, true)),
+                    alias = U(sq.alias),
                     members = members,
                 }
             end
@@ -184,7 +190,7 @@ section('mandates', function()
     for _, m in ipairs(df.global.world.mandates.all) do
         local unit = m.unit
         mandates[#mandates + 1] = {
-            noble = unit and dfhack.units.getReadableName(unit) or 'unknown',
+            noble = unit and U(dfhack.units.getReadableName(unit)) or 'unknown',
             mode = df.mandate.T_mode[m.mode],
             item_type = df.item_type[m.item_type],
             amount_total = m.amount_total,
