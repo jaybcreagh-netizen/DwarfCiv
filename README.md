@@ -226,8 +226,15 @@ FPS).
   design notes).
 - **`locale::facet` warnings** from dfhack-run are harmless console noise on
   minimal systems and are filtered by the client.
-- **Quicksave latency**: snapshots wait for `autosave_request` to clear plus
-  a settle delay; very large forts may need the timeout raised.
+- **v50 save semantics**: in-session saves (quicksave) are written to a
+  *new* `save/autosave N/` folder containing `world.sav`; the original
+  region folder keeps only the embark-time `world.dat`, which is **not** a
+  continuable game. Only `world.sav` saves appear under "Continue active
+  game". The harness archives/copies the autosave folder (renamed
+  `region1`), wipes `df/save/` before each run so the right save is the
+  only candidate, and detects save completion by watching the filesystem —
+  the `autosave_request` flag is not a reliable completion signal, and
+  `save/current/` is a transient staging area.
 - **Raw memory scans crash DF**: do not index `world_data.region_map` (or
   similar pointer arrays) by computed offsets from Lua — we hit a segfault
   doing exactly that during development. Stick to fields validated against
