@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -75,9 +76,14 @@ class DFHackClient:
             self._log_file = open(self.log_path, "ab")
             out = self._log_file
         log.info("starting DF in %s (port %d)", self.df_dir, self.port)
+        # start_new_session: ./dfhack is a shell wrapper around the real
+        # dwarfort binary, so termination must target the process group —
+        # killing only the wrapper orphans dwarfort (which also ignores
+        # SIGTERM when headless).
         self.proc = subprocess.Popen(
             ["./dfhack"], cwd=self.df_dir, env=env,
             stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         self._wait_for_rpc()
 
@@ -113,8 +119,11 @@ class DFHackClient:
                 except subprocess.TimeoutExpired:
                     pass
             if self.is_alive():
-                log.warning("DF did not exit cleanly; killing")
-                self.proc.kill()
+                log.warning("DF did not exit cleanly; killing process group")
+                try:
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    self.proc.kill()
                 self.proc.wait(timeout=15)
         self.proc = None
         if self._log_file:
