@@ -1,0 +1,8 @@
+{
+  "month_index": 0,
+  "date": {"year": 125, "tick_of_year": 0, "absolute_tick": 50400000, "month": "Granite", "day": 1, "season": "spring", "pretty": "1 Granite, year 125 (spring)"},
+  "population": 7,
+  "alerts": [],
+  "events": [],
+  "stocks": {"drink": 40, "food_total": 30, "seeds": 20, "wood": 25}
+}

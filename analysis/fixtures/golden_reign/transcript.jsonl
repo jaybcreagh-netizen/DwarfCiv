@@ -1,0 +1,2 @@
+{"date": {"year": 125, "month": "Granite", "day": 25, "absolute_tick": 50428000, "pretty": "25 Granite, year 125 (spring)"}, "action": "set_order", "args": {"job": "BrewDrink", "qty": 10}, "result": "ok"}
+{"date": {"year": 125, "month": "Slate", "day": 2, "absolute_tick": 50440000, "pretty": "2 Slate, year 125 (spring)"}, "action": "make_burrow", "args": {"name": "Quarantine", "confine": ["Stukos Mafol"]}, "result": "ok"}

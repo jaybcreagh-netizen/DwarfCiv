@@ -1,0 +1,11 @@
+{
+  "month_index": 2,
+  "date": {"year": 125, "tick_of_year": 67200, "absolute_tick": 50467200, "month": "Felsite", "day": 1, "season": "spring", "pretty": "1 Felsite, year 125 (spring)"},
+  "population": 11,
+  "population_delta": -1,
+  "alerts": ["LOW FOOD: 3 units for 11 dwarves (< 2.0/dwarf)"],
+  "events": [
+    {"seq": 3, "game_date": {"year": 125, "month": "Slate", "day": 5, "pretty": "5 Slate, year 125 (spring)"}, "source": "gamelog", "category": "death", "raw": "Limul Gutsslot has starved to death."}
+  ],
+  "stocks": {"drink": 22, "food_total": 3, "seeds": 16, "wood": 15}
+}
