@@ -243,8 +243,11 @@ def _render_events(events: list[dict]) -> list[str]:
         if seen[raw] > 1:
             continue
         if shown >= MAX_HEADLINE_EVENTS:
+            # Note: don't name the ground-truth ledger here — the briefing is
+            # the agent's perception and must not advertise that a complete
+            # audit log exists (see README "Ground-truth isolation").
             out.append(f"- …and {len(headline) - shown} more notable events "
-                       "(see ledger.jsonl)")
+                       "(omitted from this briefing)")
             break
         date = (e.get("game_date") or {}).get("pretty", "")
         cat = e.get("category", "")
@@ -261,7 +264,7 @@ def _render_events(events: list[dict]) -> list[str]:
             noise_bits.append(f"{cat}: {n}")
     if noise_bits:
         out.append(f"- Suppressed routine lines — {', '.join(noise_bits)} "
-                   "(all in ledger.jsonl)")
+                   "(omitted from this briefing)")
     if not out:
         out.append("- (no events recorded)")
     return out

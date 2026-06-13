@@ -232,6 +232,14 @@ def test_briefing_id():
     md = briefing_mod.render_markdown(b)
     check("[#42]" in md, "roster shows [#id] handle")
 
+    # The briefing is the agent's perception; it must never name the
+    # ground-truth ledger, even in its event-summary footers.
+    noisy = [{"seq": i, "category": "job_cancel",
+              "raw": f"X cancels job {i}.", "game_date": {"pretty": "1 Granite"}}
+             for i in range(5)]
+    md2 = briefing_mod.render_markdown(briefing_mod.build(state, noisy, None, 2))
+    check("ledger" not in md2.lower(), "briefing never names the ledger")
+
 
 def main():
     for fn in (test_anthropic_translation, test_openai_translation, test_mock,
