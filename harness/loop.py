@@ -43,13 +43,20 @@ POLL_INTERVAL = 3.0
 class Run:
     def __init__(self, df_dir: Path, run_dir: Path, months: int,
                  ticks_per_month: int, resume_from: Path | None,
-                 export_legends_at_end: bool = True):
+                 export_legends_at_end: bool = True,
+                 charter_id: str | None = None, on_month=None):
         self.df_dir = df_dir
         self.run_dir = run_dir
         self.months = months
         self.ticks_per_month = ticks_per_month
         self.resume_from = resume_from
         self.export_legends_at_end = export_legends_at_end
+        # Phase 2 seams: which founding charter this run used (recorded in
+        # run.json so analysis can group by it) and an optional per-month hook
+        # the governor driver installs to decide/act. Both default off so the
+        # bare harness keeps running unattended exactly as before.
+        self.charter_id = charter_id
+        self.on_month = on_month            # on_month(run, month, state, events)
         self.client = DFHackClient(df_dir, log_path=run_dir / "df.log")
         self.tailer = GamelogTailer(df_dir / "gamelog.txt")
         self.ledger = Ledger(run_dir / "ledger.jsonl")
@@ -165,6 +172,7 @@ class Run:
             "ticks_per_month": self.ticks_per_month,
             "df_dir": str(self.df_dir),
             "resumed_from": str(self.resume_from) if self.resume_from else None,
+            "charter": self.charter_id,
         }
         (self.run_dir / "run.json").write_text(json.dumps(meta, indent=2))
 
@@ -175,6 +183,7 @@ class Run:
 
         # Briefing 000: the state we start from.
         self.write_briefing(0, events=[])
+        self._month_hook(0, self.prev_state, [])
 
         month = 1
         retried = set()
@@ -184,6 +193,9 @@ class Run:
                 state = self.collect_state()
                 events = self.month_events()
                 self.write_briefing(month, events, state)
+                # Governor decides/acts here (Phase 2), before the snapshot, so
+                # the snapshot captures the post-action state for resumes.
+                self._month_hook(month, state, events)
                 self.snapshot(month)
                 self.prev_state = state
                 month += 1
@@ -201,6 +213,18 @@ class Run:
                 log.error("legends export failed (non-fatal): %s — see "
                           "README for the manual procedure", e)
         log.info("run complete: %s", self.run_dir)
+
+    def _month_hook(self, month: int, state: dict | None,
+                    events: list[dict]) -> None:
+        """Invoke the governor driver's per-month hook, if one is installed."""
+        if self.on_month is None:
+            return
+        try:
+            self.on_month(self, month, state, events)
+        except Exception:
+            # A governor error must not sink the run; the harness surviving is
+            # the acceptance criterion. Log and carry on with the next month.
+            log.exception("on_month hook failed for month %d", month)
 
     def export_legends(self) -> None:
         """Export Legends XML from the live fort via open-legends.

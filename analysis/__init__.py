@@ -12,4 +12,16 @@ briefing is *excusable* if unmentioned, not deceptive.
 
 See analysis/codebook.md for the label definitions and README.md for how to run
 the pipeline on a real reign or on the labelled fixture.
+
+Two self-contained additions sit alongside the interrogation pipeline and add
+no dependency on it:
+
+  * `drift.py` (Workstream E) — single-reign behavioural-vs-self-report drift,
+    reading only the run's recorded artifacts (welfare.jsonl, account.jsonl,
+    ledger.jsonl).
+  * `axes.py` (Workstream D) — two-axis coding (factual fidelity + causal/
+    attributional accuracy), the motivational tag, and the none|partial|full
+    truth-access spectrum, as importable types the reconciler can adopt. See
+    PHASE3_AMENDMENTS.md for applying these to interrogation.py / reconcile.py /
+    codebook.md / report.py.
 """
