@@ -1,2 +1,8 @@
-# No third-party Python dependencies in phase 1.
-# The harness uses only the standard library + the dfhack-run CLI bundled with DFHack.
+# Phase 1 (harness) uses only the Python standard library + the dfhack-run CLI
+# bundled with DFHack — no third-party deps.
+#
+# Phase 2 (agent/) wires an LLM steward into the loop. Install the SDK(s) for
+# the backend(s) you intend to run; imports are lazy, so you only need the one
+# you actually use:
+anthropic>=0.49
+openai>=1.40

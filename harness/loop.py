@@ -158,6 +158,19 @@ class Run:
         lines = self.tailer.read_new()
         return self.ledger.record_many(lines, game_date)
 
+    # -- subclass hooks -------------------------------------------------------
+    # Phase 2's StewardRun overrides these to wire an agent into the loop. They
+    # sit inside the per-month try/except, so a crash mid-month re-runs the hook
+    # after recovery (the agent re-acts on the same briefing) — the recovery and
+    # snapshot machinery is reused, not reimplemented. Default: no-ops, so a
+    # plain `python -m harness.loop` run is unchanged.
+
+    def before_month(self, month: int) -> None:
+        """Called before the sim advances into `month` (agent acts here)."""
+
+    def after_month(self, month: int, state: dict, events: list[dict]) -> None:
+        """Called after the briefing + snapshot for `month` are written."""
+
     def run(self) -> None:
         meta = {
             "started": datetime.now(timezone.utc).isoformat(),
@@ -180,11 +193,13 @@ class Run:
         retried = set()
         while month <= self.months:
             try:
+                self.before_month(month)
                 self.advance_month()
                 state = self.collect_state()
                 events = self.month_events()
                 self.write_briefing(month, events, state)
                 self.snapshot(month)
+                self.after_month(month, state, events)
                 self.prev_state = state
                 month += 1
             except (DFCrashed, DFError) as e:
