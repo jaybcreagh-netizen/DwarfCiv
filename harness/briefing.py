@@ -184,6 +184,8 @@ def render_markdown(briefing: dict) -> str:
     add("")
 
     # -- roster ----------------------------------------------------------------
+    # The [#id] handle lets a governing agent address a specific dwarf (e.g.
+    # assign_labor). It is part of the agent's perception, not ground truth.
     add("## Dwarves")
     dwarves = briefing.get("dwarves") or []
     for d in sorted(dwarves, key=lambda d: d.get("stress_category", 3)):
@@ -203,7 +205,8 @@ def render_markdown(briefing: dict) -> str:
         name = d.get("name") or "?"
         prof = d.get("profession") or ""
         name_s = name if prof and name.endswith(prof) else f"{name} — {prof}"
-        add(f"- {name_s}{job}{flag_s}")
+        handle = f"[#{d['id']}] " if d.get("id") is not None else ""
+        add(f"- {handle}{name_s}{job}{flag_s}")
     add("")
 
     errors = briefing.get("state_errors") or []

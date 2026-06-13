@@ -1,2 +1,7 @@
-# No third-party Python dependencies in phase 1.
-# The harness uses only the standard library + the dfhack-run CLI bundled with DFHack.
+# Phase 1 (harness) has no third-party deps — it uses only the standard
+# library plus the dfhack-run CLI bundled with DFHack.
+#
+# Phase 2 (the LLM steward) adds the provider SDKs. Each is only needed for
+# its own --backend; the `mock` backend needs neither.
+anthropic>=0.109
+openai>=2.0
