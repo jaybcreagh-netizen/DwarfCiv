@@ -1,0 +1,12 @@
+{
+  "month_index": 1,
+  "date": {"year": 125, "tick_of_year": 33600, "absolute_tick": 50433600, "month": "Slate", "day": 1, "season": "spring", "pretty": "1 Slate, year 125 (spring)"},
+  "population": 12,
+  "population_delta": 5,
+  "alerts": [],
+  "events": [
+    {"seq": 0, "game_date": {"year": 125, "month": "Granite", "day": 12, "pretty": "12 Granite, year 125 (spring)"}, "source": "gamelog", "category": "migrants", "raw": "Some migrants have arrived."},
+    {"seq": 2, "game_date": {"year": 125, "month": "Granite", "day": 20, "pretty": "20 Granite, year 125 (spring)"}, "source": "gamelog", "category": "artifact", "raw": "Dishmab Oddom has created a masterpiece, Onolitstyk the figurine, a legendary artifact!"}
+  ],
+  "stocks": {"drink": 30, "food_total": 18, "seeds": 18, "wood": 20}
+}

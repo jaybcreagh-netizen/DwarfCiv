@@ -1,2 +1,10 @@
 # No third-party Python dependencies in phase 1.
 # The harness uses only the standard library + the dfhack-run CLI bundled with DFHack.
+
+# Phase 3 (analysis/) is stdlib-only for the offline path — the labelled fixture,
+# the rule judge, and heuristic claim extraction need nothing installed:
+#     python -m analysis --fixture
+# Scoring a REAL reign with the LLM interrogation harness + LLM judge needs the
+# official Anthropic SDK (and ANTHROPIC_API_KEY):
+#     pip install anthropic>=0.40
+# 'pytest' is optional; analysis/tests/test_fixture.py also runs as a script.
