@@ -490,13 +490,14 @@ class MockClient(LLMClient):
 
         # governance turn: a fixed slate exercising success + a stubbed verb +
         # pass_turn (the stubbed verb returns an error, validating the path).
-        text = ("Reviewing the briefing: I will brew drink and prepare meals to "
-                "guard against shortage, attempt a workshop, then yield the month.")
+        text = ("Reviewing the briefing: I will prepare meals against shortage "
+                "and order beds for my people, attempt a workshop, then yield "
+                "the month.")
         tcs = [
             ToolCall(id=_mid(), name="set_order",
-                     arguments={"job": "BrewDrink", "qty": 10}),
-            ToolCall(id=_mid(), name="set_order",
                      arguments={"job": "PrepareMeal", "qty": 10}),
+            ToolCall(id=_mid(), name="set_order",
+                     arguments={"job": "ConstructBed", "qty": 5}),
             ToolCall(id=_mid(), name="build",
                      arguments={"workshop_type": "Still", "zone": "near the food stocks"}),
             ToolCall(id=_mid(), name="pass_turn", arguments={}),

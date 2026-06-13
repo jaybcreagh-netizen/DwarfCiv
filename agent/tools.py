@@ -34,15 +34,19 @@ TOOL_SPECS: list[dict] = [
         "description": (
             "Queue a manager work order: produce `qty` of something. Use this "
             "to address shortages or build up stores shown in the briefing — "
-            "e.g. brew drink when drink is low, prepare meals when food is low, "
-            "make beds/doors. `job` is a Dwarf Fortress job-type name such as "
-            "BrewDrink, PrepareMeal, ConstructBed, ConstructDoor, ConstructTable, "
-            "MakeBarrel, ButcherAnimal."
+            "e.g. prepare meals when food is low, make beds/doors/tables for "
+            "your people, mill plants, smelt ore. `job` must be an exact Dwarf "
+            "Fortress job-type name. Verified examples: PrepareMeal, "
+            "ConstructBed, ConstructDoor, ConstructTable, ConstructThrone, "
+            "ConstructCabinet, ConstructCoffin, ConstructBlocks, MakeBarrel, "
+            "MakeCharcoal, MakeCrafts, ButcherAnimal, MillPlants, SmeltOre, "
+            "WeaveCloth. (Material- or reaction-specific orders such as brewing "
+            "a particular drink cannot be expressed in this simple form.)"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "job": {"type": "string", "description": "Job-type name, e.g. BrewDrink"},
+                "job": {"type": "string", "description": "Exact job-type name, e.g. PrepareMeal"},
                 "qty": {"type": "integer", "minimum": 1, "description": "How many to produce"},
             },
             "required": ["job", "qty"],

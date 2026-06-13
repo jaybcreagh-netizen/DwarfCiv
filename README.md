@@ -4,11 +4,19 @@ An agent environment for Dwarf Fortress: frontier LLMs will govern fortress
 settlements while we record ground truth about what actually happened and
 study how the societies retell their own history.
 
-**This is Phase 1: the simulation harness only.** No LLM/agent logic lives
-here yet. The deliverables are: a reproducible headless DF environment, a
-controlled tick loop, a compact per-month state **briefing** (what a future
-agent will read), an append-only event **ledger** (ground truth for later
-fact-checking), and a stubbed governance **action vocabulary**.
+**Phase 1 (the simulation harness)** is the foundation: a reproducible
+headless DF environment, a controlled tick loop, a compact per-month state
+**briefing** (what the agent reads), an append-only event **ledger** (ground
+truth for later fact-checking), and a governance **action vocabulary**.
+
+**Phase 2 (the single steward)** wires one LLM into that loop: each in-game
+month the model reads the briefing, issues orders from the action vocabulary,
+and at each season's end writes a diary entry "for the historical record".
+One model governs one fortress for one year; the deliverable is a readable
+**transcript** of the reign. See [The steward (Phase 2)](#the-steward-phase-2).
+
+The rest of this README documents Phase 1 first; the Phase 2 section builds
+directly on it.
 
 ## Versions (pinned)
 
@@ -123,6 +131,7 @@ then run `exportlegends` from the DFHack console and press the vanilla
 ## Architecture & design notes
 
 ```
+# Phase 1 — the harness
 harness/dfhack_client.py  # process lifecycle + dfhack-run command channel
 harness/loop.py           # tick loop, snapshots, crash recovery (CLI)
 harness/briefing.py       # state+events -> briefing JSON + Markdown
@@ -131,6 +140,16 @@ harness/actions.py        # governance verbs (4 implemented, 6 stubbed)
 dfhack-scripts/*.lua      # the DF-side half (state dump, advance, UI clicks)
 setup/install.sh          # pinned DF+DFHack install
 setup/make_world.py       # deterministic world + embark
+
+# Phase 2 — the steward
+agent/steward.py          # the governance loop (subclasses harness Run); CLI
+agent/client.py           # provider-agnostic LLM client (anthropic/openai/mock)
+agent/tools.py            # actions.py verbs as model tools + safe dispatch
+agent/memory.py           # swappable context-assembly policy (no ground truth)
+agent/diary.py            # neutral seasonal-diary prompt + storage
+agent/transcript.py       # human transcript.md + machine transcript.jsonl
+config/charter.md         # the steward's system prompt (loaded from file)
+tests/test_agent_offline.py  # offline checks (no key/DF needed)
 ```
 
 **Control channel: `dfhack-run` + Lua scripts, not the protobuf remote API.**
@@ -214,6 +233,160 @@ Expected: completes without input; `runs/acceptance/` contains briefings
 000–003 (md+json), a populated `ledger.jsonl`, three snapshots, and a legends
 export. Takes roughly 10–30 min depending on CPU (the fort runs at uncapped
 FPS).
+
+## The steward (Phase 2)
+
+A single LLM governs the pinned fortress for one in-game year. Each month it
+reads the Markdown briefing, issues orders from the action vocabulary (exposed
+as tools), and at every season's end writes a diary entry. The point of this
+phase is the **go/no-go gate**: run one capable model through one reign and
+read the transcript to judge whether anything *legible* emerges — a fortress
+with a recognizable character — or whether it's just noise. The fortress is
+allowed to fail; what matters is that the reign is legible and interesting.
+
+### Running a reign
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...          # for --backend anthropic
+# or: export OPENAI_API_KEY=sk-...           # for --backend openai
+
+python -m agent.steward --months 12 --backend anthropic --model claude-opus-4-8
+python -m agent.steward --months 1  --backend mock       # offline smoke, no key
+```
+
+The full acceptance run is `--months 12`. A `--months 1` run is the cheap
+iteration path. Useful flags: `--model`, `--temperature`, `--effort`
+(Anthropic `low|medium|high|xhigh|max`), `--action-cap` (max orders/month,
+default 15), `--memory-policy`, `--run-name`, `--resume-from`, `--skip-legends`.
+
+**Backends.** `anthropic` and `openai` are both driven through tool/function
+calling behind one provider-agnostic interface (`agent/client.py`); the
+steward loop never branches on provider. `mock` is a third backend behind the
+same interface — a deterministic, offline stand-in that issues a fixed slate of
+orders so the whole DF↔agent loop (tool dispatch, errors, diary, transcript,
+snapshots) can be exercised without an API key or network. It is **not** a
+reasoner; use it for plumbing, not for the gate.
+
+**Default model.** The default is `claude-opus-4-8` (frontier-tier, generally
+available, well-understood request surface). The single most capable model,
+`claude-fable-5`, is one flag away (`--model claude-fable-5`); it costs ~2× and
+has extra API behaviors (always-on thinking, safety-refusal handling), so it is
+opt-in rather than the default. For the actual go/no-go gate, run the most
+capable model you're willing to pay for.
+
+### Outputs
+
+Outputs land in `runs/<run-name>/` (default `reign-<timestamp>`):
+
+```
+runs/<name>/
+  transcript.md          # THE deliverable — the whole reign, readable top to bottom
+  transcript.jsonl       # the same, machine-readable, for later phases
+  diary/diary-NN-<season>.md   # the four seasonal chronicle entries, verbatim
+  memory/memory.jsonl    # exactly what the steward was allowed to remember
+  briefing-000..012.{md,json}  # the perceptions the steward saw (Phase 1)
+  ledger.jsonl           # ground truth, recorded underneath the whole run (Phase 1)
+  snapshots/month-NNN/   # per-month saves (Phase 1)
+  legends/               # legends XML export at run end (Phase 1)
+  run.json, cost.json, steward.log
+```
+
+`transcript.md` interleaves, per month: the briefing the steward read, its
+reasoning, the orders it issued and how each resolved, and — at season ends —
+its diary entry. A token/cost summary prints at the end and is saved to
+`cost.json`.
+
+### Cost
+
+A 12-month reign is many model calls (one per governance turn, more if the
+model issues orders across several steps, plus four diary calls). Token usage
+and an estimated dollar cost print at run end and are written to `cost.json`
+(Anthropic pricing is built in; pass `--price-in/--price-out` or read the token
+counts for other providers). Expect a single Opus-4.8 reign to be on the order
+of a few hundred thousand tokens — well under a dollar to low single digits,
+dominated by the growing context as the full briefing history accumulates. The
+exact figure depends on model, effort, and how verbose the reign gets; the
+printed summary is the source of truth.
+
+### Design notes
+
+**Ground-truth isolation (inviolable).** The steward's *only* inputs are (a)
+the Markdown briefings and (b) its own past reasoning and diary entries. It is
+**never** fed `ledger.jsonl` or Legends data. The briefing is the agent's
+lossy, curated *perception*; the ledger is reality. The whole later project
+depends on comparing what the agent saw and said against what actually
+happened — and on telling "didn't know" apart from "knew and concealed" — so
+handing the steward the complete event log would silently break the premise.
+`agent/memory.py` only ever ingests briefing Markdown, agent reasoning, and
+diary text; the offline tests assert no ledger content reaches the context.
+
+**The diary is part of memory — on purpose.** The steward reads its own past
+diary entries on later turns. If it confabulates, it may come to rely on its
+own confabulation. We never correct the diary against ground truth; that
+feedback loop is a feature, and the diary prompt never mentions accuracy,
+honesty, or that the entry will ever be checked.
+
+**Memory is a swappable component.** What the agent remembers shapes the
+society it builds, so the memory policy is a first-class, swappable object
+(`MemoryPolicy` in `agent/memory.py`), not hardcoded in the loop. The default
+`full_history` policy reconstructs the context each turn from stored artifacts
+— every briefing the agent saw, its own reasoning and the orders it issued each
+month (the "rolling action record"), and its diary entries — in chronological
+order, ending with the governance instruction.
+
+> *Design fork (memory).* The two natural designs were (a) one ever-growing
+> native conversation that *is* the memory, and (b) reconstruct the context
+> each turn from stored artifacts. We chose (b): it keeps the policy explicit
+> and swappable, stores memory as inspectable artifacts (`memory/memory.jsonl`),
+> and lets the "what the agent remembers" variable be changed without touching
+> the loop. The cost is that we replay a per-turn *summary* of orders rather
+> than every raw tool-result block. This is fine for a one-year run (≈12
+> briefings of ~1–2k tokens plus diaries fits a modern context window
+> comfortably) but will **not** scale to multi-year runs — a later phase will
+> add a summarizing policy that compacts older turns, and that change touches
+> only `agent/memory.py`.
+
+**Provider abstraction.** One neutral conversation model (`Message` / `ToolCall`
+/ `ToolResult`) is translated to each provider's wire format inside the client.
+Provider quirks live there, not in the steward: frontier Anthropic models
+(Opus 4.7+/Fable 5) reject `temperature`, so the client omits it for them and
+forwards it for OpenAI/older models; Anthropic assistant turns carry their
+native content (including thinking blocks) for faithful replay within a turn,
+because the API rejects modified thinking blocks. If you ever find yourself
+writing `if backend == "anthropic"` in the steward, it belongs in the client.
+
+**The monthly turn.** The model issues orders until it calls `pass_turn` or
+hits the per-month action cap (default 15). Every order is dispatched to the
+Phase-1 `actions.py` verb and the result — success, or a clear error — is fed
+back as a tool result. An invalid order (a stubbed verb, bad arguments, a
+DFHack failure) is **handled gracefully and returned as feedback, never a
+fatal crash**, so the model can adapt. Of the verbs, `set_order`,
+`assign_labor`, `dig_blueprint`, and `pass_turn` are implemented; the rest are
+stubs that return a clear "not available yet" error. Note `set_order` job names
+must be exact `df.job_type` names (e.g. `PrepareMeal`, `ConstructBed`,
+`MakeBarrel`, `SmeltOre`); material-/reaction-specific orders like brewing a
+particular drink can't be expressed in the simple `set_order(job, qty)` form.
+
+**Crash handling.** The steward reuses Phase 1's crash recovery. The agent
+governs once per month; if the *advance* crashes, the harness reloads the last
+snapshot and retries the advance only (never re-spending model tokens). Orders
+issued for a crashed month are lost with the reverted snapshot — acceptable for
+a pilot where the fortress is allowed to fail.
+
+### Phase 2 acceptance test
+
+```bash
+python -m agent.steward --months 12 --backend anthropic --model claude-opus-4-8
+```
+
+Runs a single model through a full in-game year with zero human intervention
+and produces: a complete `transcript.md`, four seasonal diary entries stored
+separately from the ledger, a `ledger.jsonl` that kept recording ground truth
+underneath the run, per-month save snapshots, and a printed token/cost summary.
+The fortress may thrive or collapse — the gate is whether the reign is *legible
+and interesting*, not whether it succeeded. Offline, the same shape is
+validated with `--backend mock` (and `python -m tests.test_agent_offline`
+covers the provider abstraction, tool dispatch, memory, and isolation).
 
 ## Known flakiness
 
