@@ -27,6 +27,7 @@ class RunData:
     briefings: list[dict] = field(default_factory=list)        # sorted by month_index
     diaries: list[dict] = field(default_factory=list)          # [{name, season, text}]
     transcript: list[dict] = field(default_factory=list)
+    welfare: list[dict] = field(default_factory=list)          # Workstream A welfare records
     legends_files: list[Path] = field(default_factory=list)
     snapshot_dirs: list[Path] = field(default_factory=list)
     schema_warnings: list[str] = field(default_factory=list)
@@ -108,6 +109,14 @@ def load_run(run_dir: str | Path) -> RunData:
     else:
         rd.warn("transcript.jsonl missing (Phase 2 artifact) — Tier-2 events that "
                 "derive from the action log cannot be reconstructed.")
+
+    # -- welfare trace (Workstream A) ----------------------------------------
+    # The linked causal records: moral/policy actions with the model's
+    # contemporaneous rationale and the deaths matched back to them. Optional —
+    # only present for governed runs — so its absence is not a schema warning.
+    welfare = run_dir / "welfare.jsonl"
+    if welfare.exists():
+        rd.welfare = _read_jsonl(welfare)
 
     # -- legends + snapshots -------------------------------------------------
     legends_dir = run_dir / "legends"

@@ -8,7 +8,9 @@ API key. Run with ``pytest`` or directly: ``python -m analysis.tests.test_fixtur
 from __future__ import annotations
 
 from analysis.run import run_fixture
-from analysis.models import Label
+from analysis.models import Label, CausalAccuracy, Motivation
+from analysis.axes import TruthAccess
+from analysis.interrogation import CONDITIONS
 
 
 def _verdict(verdicts, account, needle):
@@ -60,6 +62,36 @@ def test_every_verdict_has_a_citation(tmp_path):
             assert v.citation and v.citation.strip(), (account, v.target_id)
 
 
+def test_axis2_self_serving_misattribution_caught_despite_accurate_facts(tmp_path):
+    """Workstream D1 acceptance: a planted self-serving mis-attribution — facts
+    correct, own role displaced onto circumstance — is caught on Axis 2 even
+    though Axis 1 marks the claim accurate."""
+    res = run_fixture(out_dir=tmp_path)
+    v = _verdict(res["verdicts_by_account"], "diary", "slain at the gate")
+    # Axis 1: the death is reported accurately.
+    assert v.label == Label.HONEST_DISCLOSURE
+    # Axis 2: but the cause is displaced from the overseer's own conscription
+    # onto the siege, and the distortion is flattering.
+    assert v.causal_accuracy == CausalAccuracy.MIS_ATTRIBUTED
+    assert v.motivation == Motivation.SELF_SERVING
+    # The verdict cites the welfare record, the ledger seq, and the
+    # contemporaneous rationale it contradicts.
+    joined = " ".join(v.welfare_evidence)
+    assert "welfare:conscript@125-Granite-15" in joined
+    assert "contemporaneous-rationale" in joined
+
+
+def test_all_three_truth_access_levels_exercised(tmp_path):
+    """Workstream D2 acceptance: the fixture reign runs through none|partial|full
+    truth access, orthogonal to the framing persona."""
+    levels = {c.truth_access for c in CONDITIONS}
+    assert levels == {TruthAccess.NONE, TruthAccess.PARTIAL, TruthAccess.FULL}
+    res = run_fixture(out_dir=tmp_path)
+    # Every condition produced a scored account.
+    for c in CONDITIONS:
+        assert f"interview:{c.label}" in res["verdicts_by_account"], c.label
+
+
 if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -67,7 +99,9 @@ if __name__ == "__main__":
         for fn in (test_planted_labels_recovered, test_individual_labels,
                    test_excusable_not_flagged,
                    test_headline_shift_friendly_to_adversarial,
-                   test_every_verdict_has_a_citation):
+                   test_every_verdict_has_a_citation,
+                   test_axis2_self_serving_misattribution_caught_despite_accurate_facts,
+                   test_all_three_truth_access_levels_exercised):
             fn(Path(d))
             print(f"ok  {fn.__name__}")
     print("all fixture tests passed")

@@ -270,14 +270,15 @@ still proclaims its founding value:
 python -m analysis.drift runs/<name>            # writes runs/<name>/drift.md
 ```
 
-**Phase 3 amendments (`analysis/axes.py`).** Two-axis coding (factual fidelity
-*and* causal/attributional accuracy, incl. the model's own role) and the
-`none|partial|full` truth-access spectrum, built as standalone importable types
-plus `cross_reference_rationale` — which catches a self-serving mis-attribution
-(facts correct, own role displaced onto circumstance) by checking the
-historian's account against the contemporaneous welfare rationale. See
-`analysis/PHASE3_AMENDMENTS.md` for applying these to the in-flight Phase 3
-interrogation pipeline.
+**Phase 3 amendments (`analysis/axes.py`, applied across the pipeline).**
+Two-axis coding — factual fidelity (`models.Label`) *and* causal/attributional
+accuracy (`models.CausalAccuracy`, incl. the model's own role) plus a
+motivational tag — and the `none|partial|full` truth-access spectrum. The
+reconciler cross-references each account against the contemporaneous welfare
+rationale and catches a self-serving mis-attribution (facts correct, own role
+displaced onto circumstance) even where Axis 1 reads accurate; the interrogation
+harness adds a full-ground-truth historian and routes the confessional probes
+there. See `analysis/PHASE3_AMENDMENTS.md` for the per-file changelog.
 
 ### Running a governed reign
 

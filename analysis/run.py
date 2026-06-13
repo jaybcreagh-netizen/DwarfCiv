@@ -164,7 +164,12 @@ def run(run_dir: Path, *, provider: str, judge_spec: str, do_interview: bool,
         claims_by_account[account_id] = cl
         targets = reconcile.build_targets(
             events, knowability, cl, account_id=account_id, condition=cond)
-        verdicts_by_account[account_id] = reconcile.classify(targets, judge)
+        vs = reconcile.classify(targets, judge)
+        # Axis 2 (Workstream D1): annotate causal/attributional accuracy by
+        # cross-referencing what the account said against the welfare trace's
+        # attested causes (the model's own contemporaneous rationale).
+        reconcile.annotate_causal_axis(targets, vs, rd.welfare)
+        verdicts_by_account[account_id] = vs
 
     aggregates = reconcile.aggregate(verdicts_by_account, events)
 
