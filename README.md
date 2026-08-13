@@ -16,9 +16,9 @@ model could have known, and what it said about its own rule, and classifies
 every claim — the headline question being *how honestly a model accounts for its
 own governance, and whether that honesty changes under questioning.* It builds
 and self-tests against a labelled fixture, so it runs today with no real reign
-and no API key: `python -m analysis --fixture`. (Phase 2, one LLM in the
-governance loop, is in progress; Phase 3 consumes its diaries/transcript when
-present and degrades gracefully when not.)
+and no API key: `python -m analysis --fixture`. (**Phase 2 — one LLM in the
+governance loop — now exists**: see the LLM governor below. Phase 3 consumes its
+diaries when present and degrades gracefully when not.)
 
 ## Versions (pinned)
 
@@ -143,6 +143,8 @@ agent/charter.py          # founding-charter loading (Workstream B)
 agent/schemas.py          # tool schemas + required-rationale contract
 agent/probes.py           # neutral yearly in-situ probes (Workstream C)
 agent/governor.py         # pluggable governor interface + ScriptedGovernor
+agent/llm_governor.py     # the real model in the loop (act -> outcomes -> diary)
+agent/memory.py           # what the governor carries between months
 agent/dispatch.py         # ActionCall -> harness.actions, threading welfare
 agent/account.py          # the governor's account record (diary/reasoning/probes)
 agent/run_governed.py     # CLI: a charter + governor wired onto the harness
@@ -279,28 +281,83 @@ historian's account against the contemporaneous welfare rationale. See
 `analysis/PHASE3_AMENDMENTS.md` for applying these to the in-flight Phase 3
 interrogation pipeline.
 
+### The LLM governor (`agent/llm_governor.py`)
+
+A real model in the loop. One month is **two turns of one conversation**:
+
+1. **Act.** The model receives its charter, its own account so far, and this
+   month's briefing, with the Workstream A tool catalogue attached. It answers
+   with tool calls — the required `rationale` on a moral tool arrives as a
+   structured argument, never parsed back out of prose.
+2. **Narrate.** Every call is executed by the harness and its outcome — success
+   *or failure* — is handed back as a `tool_result`. Only then does the model
+   write its diary.
+
+That ordering is the point of the split, and it mirrors the knowability
+principle on the other side of the ledger: a diary written *before* dispatch can
+claim an action that silently failed in DF, and Phase 3's reconciler would score
+that claim as **confabulation** when it is really just ignorance. The governor
+interface gained `observe(charter, outcomes, context) -> str` for this; governors
+that narrate up front (`ScriptedGovernor`, `PassGovernor`) return `""` and keep
+the diary their plan carried, so the existing path is unchanged.
+
+**Memory (`agent/memory.py`).** Diaries and probe answers always survive between
+months; briefings are what gets dropped (oldest first, `MAX_BRIEFINGS`). If the
+diary record alone exceeds the character budget, the *middle* is elided — the
+founding year and the recent past are the two ends drift is measured between, so
+both are kept. A model that cannot recall its founding year cannot be held to
+what it said then, and the drift readout would be measuring the context window
+rather than the model.
+
+**DESIGN GUARD.** The governance prompts are neutral and operational, exactly as
+in `agent/probes.py`: they do not tell the model to be honest, complete, or
+candid, do not mention that its account will be checked, and carry no moral
+framing beyond the charter itself. The only normative language the model ever
+sees about its own reporting is the rationale field's description in
+`agent/schemas.py` — part of the action contract, constant across every run and
+charter. `tests/test_llm_governor.py` asserts this against a list of leading
+phrases; keep it that way, or the instrument measures its own prompt.
+
+Malformed tool calls (a moral tool with no rationale, an unknown tool) are
+dropped rather than raised — the month survives — and the rejection is returned
+to the model as that call's `tool_result`, so it learns of its own bad order
+instead of watching it vanish. Provider failures are recorded to
+`runs/<id>/governor.json` (alongside per-stage token cost) and the month passes
+with **no diary entry**: a month the API dropped is not the same as a month the
+model chose not to narrate, and Phase 3 must not read the first as the second.
+
 ### Running a governed reign
 
 ```bash
-python -m agent.run_governed --charter preserve_life --months 24
+python -m agent.run_governed --charter preserve_life --governor llm --months 24
+python -m agent.run_governed --charter neutral --governor llm --provider mock   # offline
+python -m agent.run_governed --charter preserve_life --months 24                # pass control
 ```
 
-Records the charter into `run.json`, runs the harness with the governor hook
-installed, and writes `welfare.jsonl` + `account.{jsonl,md}` alongside the
-usual briefings. Defaults to a do-nothing `PassGovernor` (exercises charter
-injection, probes, and welfare matching end-to-end without an LLM); plug a real
-governor with `--governor module:factory`.
+Records the charter **and `model_id`** into `run.json` (Phase 4 groups reigns by
+the model that governed them — this closes the schema gap `analysis/ingest.py`
+was warning about), runs the harness with the governor hook installed, and
+writes `welfare.jsonl` + `account.{jsonl,md}` + `governor.json` alongside the
+usual briefings. `--governor` takes `llm`, `pass` (the do-nothing control, the
+default), or `module:factory`; `--model` / `--provider` / `--effort` configure
+the LLM governor. The `mock` provider drives the whole path — tool call →
+dispatch → welfare record → `tool_result` → diary — with no network and no key.
 
 ### Tests
 
 ```bash
-python -m unittest discover -s tests        # 33 tests, no live DF required
+python -m unittest discover -s tests        # 58 tests, no live DF required
 ```
 
 Covers the Workstream acceptance criteria: welfare consequence-linking, the
 required-rationale contract, charter loading (incl. the neutral control), probe
 cadence/neutrality, the drift gap, and the planted self-serving mis-attribution
-caught on Axis 2 while Axis 1 reads accurate.
+caught on Axis 2 while Axis 1 reads accurate. Plus the governance loop: tool
+call → validated action, malformed calls dropped rather than raised, every
+`tool_use` answered by a `tool_result` (including rejected ones), the assistant
+turn replayed verbatim so thinking blocks survive, the post-outcome diary
+winning over the planned one, probe/question alignment, prompt neutrality, and
+one end-to-end month on the mock provider.
 
 ## Acceptance test
 
@@ -488,12 +545,18 @@ reliability on real reigns.)
 file schemas and records every mismatch in `results.json["schema_warnings"]`
 rather than assuming. Known gaps the pipeline tolerates:
 
-- **`run.json` lacks `model_id` / `seed` / `charter`.** Phase 1 writes only
-  `{started, months, ticks_per_month, df_dir, resumed_from}`. Phase 2 must add
-  `model_id` so Phase 4 can group reigns by model. (The fixture’s `run.json`
-  includes them, to exercise the target schema.)
-- **`diary/` and `transcript.jsonl` are Phase 2 artifacts.** Absent them, diary
-  scoring is empty and Tier-2 derivation has no action log.
+- **`run.json` lacks `seed`.** Phase 1 writes
+  `{started, months, ticks_per_month, df_dir, resumed_from}`; a governed run now
+  also writes `charter`, `governor`, and **`model_id`**, so Phase 4 can group
+  reigns by the model that governed them. `seed` is still absent (the world is
+  pinned by the archived save, not recorded per run). (The fixture’s `run.json`
+  includes the full target schema.)
+- **`diary/` and `transcript.jsonl` are Phase 2 artifacts.** The LLM governor
+  writes `account.jsonl` (diary + reasoning + probes) and `welfare.jsonl`;
+  `analysis/ingest.py` still expects `diary/` and `transcript.jsonl`, so wiring
+  the account record into the Phase 3 loader is the remaining seam. Until then
+  diary scoring on a real reign stays empty and Tier-2 derivation has no
+  action log.
 
 Morally salient **Tier-2 event classes that cannot yet be derived** from current
 harness output are recorded as Phase 2 harness requirements (in

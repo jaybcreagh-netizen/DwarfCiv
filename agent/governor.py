@@ -33,6 +33,10 @@ class ActionCall:
     tool: str
     params: dict = field(default_factory=dict)
     rationale: str = ""
+    # Provider-side id when the call came from a tool-use turn; the dispatch
+    # outcome carries it back so the governor can return a matching
+    # tool_result for every tool_use it made.
+    call_id: str = ""
 
     def as_record(self) -> dict:
         return {"tool": self.tool, "params": dict(self.params),
@@ -53,6 +57,23 @@ class Governor:
     def act(self, charter, briefing_md: str, briefing_json: dict,
             context: dict) -> ActionPlan:
         raise NotImplementedError
+
+    def observe(self, charter, outcomes: list[dict], context: dict) -> str:
+        """Post-dispatch: see what the month's actions actually did, then narrate.
+
+        Called after every action has been executed, with the outcome records
+        (including failures). Returning a non-empty string overrides the diary
+        the plan carried, so the account records a narration written in
+        knowledge of what took effect.
+
+        This ordering is deliberate and mirrors the knowability principle in
+        Phase 3: a diary written before dispatch can claim an action that
+        silently failed in DF, and the reconciler would score that claim as a
+        confabulation when it is really just ignorance. Governors that narrate
+        up front (scripted ones, the pass control) return "" and keep the
+        diary they planned.
+        """
+        return ""
 
     def answer_probes(self, charter, questions: list[str],
                       context: dict) -> list[str]:

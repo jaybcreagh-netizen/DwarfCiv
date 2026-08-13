@@ -32,6 +32,7 @@ from pathlib import Path
 from harness.loop import Run, REPO_ROOT
 from harness.welfare import WelfareTrace
 from . import charter as charter_mod
+from . import client as client_mod
 from . import probes as probes_mod
 from .account import AccountRecord
 from .governor import Governor, ActionPlan, ActionCall
@@ -81,16 +82,18 @@ class GovernedRun:
         # Month 0 is the load-time briefing: no actions, but it primes the
         # context and lets us record a year-0 baseline probe.
         date = (state or {}).get("date")
+        briefing_md = self._read_briefing(month)
+        briefing_json = (state if state is not None
+                         else self._read_briefing_json(month))
         context = {
             "month_index": month,
             "year": probes_mod.probe_year(month),
             "account": self.account.entries,
             "charter_id": self.charter.id,
+            # Month 0 fires the baseline probe without ever calling act(), so
+            # the probe needs this month's briefing handed to it directly.
+            "briefing_md": briefing_md,
         }
-
-        briefing_md = self._read_briefing(month)
-        briefing_json = (state if state is not None
-                         else self._read_briefing_json(month))
 
         # 2. Decide and act.
         if month > 0:
@@ -100,8 +103,14 @@ class GovernedRun:
             outcomes = [dispatch(run.client, call, welfare=self.welfare)
                         for call in plan.actions]
             self.account.reasoning(month, date, outcomes)
-            if plan.diary:
-                self.account.diary(month, date, plan.diary)
+            # The diary is written *after* the outcomes are known (see
+            # Governor.observe): a governor that narrates post-dispatch cannot
+            # claim an order that silently failed. Governors that narrate up
+            # front return "" here and keep the diary their plan carried.
+            diary = self.governor.observe(self.charter, outcomes, context) \
+                or plan.diary
+            if diary:
+                self.account.diary(month, date, diary)
 
         # 3. Yearly neutral in-situ probe (Workstream C). Also fire a year-0
         #    baseline at load so drift has a t=0 anchor.
@@ -114,6 +123,29 @@ class GovernedRun:
             self.account.in_situ(month, year, date, qa)
             log.info("in-situ probe recorded for year %d", year)
 
+    # -- end of reign ---------------------------------------------------------
+
+    def finalize(self, governor: Governor) -> None:
+        """Write what the reign cost and anything the governor failed to do.
+
+        Provider failures are recorded rather than swallowed: a month whose
+        account is empty because the API errored is not the same as a month the
+        model chose not to narrate, and Phase 3 must not read the first as the
+        second.
+        """
+        report: dict = {}
+        client = getattr(governor, "client", None)
+        if client is not None and hasattr(client, "usage_summary"):
+            report["usage"] = client.usage_summary()
+        errors = list(getattr(governor, "errors", []) or [])
+        if errors:
+            report["governor_errors"] = errors
+            log.warning("%d governor call(s) failed this reign; see "
+                        "governor.json", len(errors))
+        if report:
+            (self.run_dir / "governor.json").write_text(
+                json.dumps(report, indent=2), encoding="utf-8")
+
     # -- helpers -------------------------------------------------------------
 
     def _read_briefing(self, month: int) -> str:
@@ -125,14 +157,20 @@ class GovernedRun:
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
-def load_governor(spec: str | None) -> Governor:
-    """Resolve --governor 'module:factory' to a Governor instance.
+def load_governor(spec: str | None, *, model: str | None = None,
+                  provider: str = "anthropic", effort: str = "high") -> Governor:
+    """Resolve --governor to a Governor instance.
 
-    The factory may be a Governor subclass or a zero-arg callable returning
-    one. Defaults to PassGovernor when spec is None.
+    Accepts three forms: ``None``/``pass`` (the do-nothing control), ``llm``
+    (a real governing model, configured by --model/--provider/--effort), or
+    ``module:factory`` for anything else. The factory may be a Governor
+    subclass or a zero-arg callable returning one.
     """
-    if not spec:
+    if not spec or spec == "pass":
         return PassGovernor()
+    if spec == "llm":
+        from .llm_governor import build as build_llm
+        return build_llm(model=model, provider=provider, effort=effort)
     mod_name, _, attr = spec.partition(":")
     mod = importlib.import_module(mod_name)
     obj = getattr(mod, attr) if attr else mod
@@ -149,8 +187,17 @@ def main() -> None:
                     help=f"charter id from config/charters/ "
                          f"(default: {charter_mod.NEUTRAL})")
     ap.add_argument("--governor", default=None,
-                    help="module:factory producing a Governor "
-                         "(default: PassGovernor, takes no actions)")
+                    help="'llm' for a real governing model, 'pass' for the "
+                         "do-nothing control, or module:factory "
+                         "(default: pass)")
+    ap.add_argument("--model", default=None,
+                    help="model id for --governor llm "
+                         f"(default: {client_mod.DEFAULT_MODEL})")
+    ap.add_argument("--provider", default="anthropic",
+                    choices=["anthropic", "mock"],
+                    help="'mock' exercises the full governance path offline")
+    ap.add_argument("--effort", default="high",
+                    help="adaptive-thinking effort for --governor llm")
     ap.add_argument("--months", type=int, default=24)
     ap.add_argument("--df-dir", default=str(REPO_ROOT / "df"))
     ap.add_argument("--run-name", default=None)
@@ -170,7 +217,8 @@ def main() -> None:
                   logging.FileHandler(run_dir / "harness.log")])
 
     charter = charter_mod.load(args.charter)
-    governor = load_governor(args.governor)
+    governor = load_governor(args.governor, model=args.model,
+                             provider=args.provider, effort=args.effort)
     log.info("governed run: charter=%s governor=%s tension=%r",
              charter.id, governor.name, charter.intended_tension)
 
@@ -180,12 +228,17 @@ def main() -> None:
               resume_from=Path(args.resume_from).resolve()
               if args.resume_from else None,
               export_legends_at_end=not args.skip_legends,
-              charter_id=charter.id, on_month=governed)
+              charter_id=charter.id, on_month=governed,
+              # Phase 3/4 need to know which model governed this reign; the
+              # analysis pipeline groups by run.json's model_id.
+              run_meta={"governor": governor.name,
+                        "model_id": getattr(governor, "model_id", None)})
     try:
         run.run()
     finally:
         run.client.stop()
         run.ledger.close()
+        governed.finalize(governor)
 
 
 if __name__ == "__main__":

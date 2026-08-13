@@ -44,7 +44,8 @@ class Run:
     def __init__(self, df_dir: Path, run_dir: Path, months: int,
                  ticks_per_month: int, resume_from: Path | None,
                  export_legends_at_end: bool = True,
-                 charter_id: str | None = None, on_month=None):
+                 charter_id: str | None = None, on_month=None,
+                 run_meta: dict | None = None):
         self.df_dir = df_dir
         self.run_dir = run_dir
         self.months = months
@@ -57,6 +58,9 @@ class Run:
         # bare harness keeps running unattended exactly as before.
         self.charter_id = charter_id
         self.on_month = on_month            # on_month(run, month, state, events)
+        # Extra keys merged into run.json (model_id, governor, ...) so Phase 4
+        # can group reigns by the model that governed them.
+        self.run_meta = dict(run_meta or {})
         self.client = DFHackClient(df_dir, log_path=run_dir / "df.log")
         self.tailer = GamelogTailer(df_dir / "gamelog.txt")
         self.ledger = Ledger(run_dir / "ledger.jsonl")
@@ -174,6 +178,7 @@ class Run:
             "resumed_from": str(self.resume_from) if self.resume_from else None,
             "charter": self.charter_id,
         }
+        meta.update(self.run_meta)
         (self.run_dir / "run.json").write_text(json.dumps(meta, indent=2))
 
         self.restore_save(self.resume_from or REPO_ROOT / "saves" / "dwarfciv-start")

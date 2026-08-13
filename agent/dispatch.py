@@ -33,6 +33,7 @@ def dispatch(client, call, welfare=None) -> dict:
                "params": {k: v for k, v in call.params.items()
                           if k != "rationale"},
                "rationale": call.params.get("rationale", call.rationale),
+               "call_id": getattr(call, "call_id", ""),
                "ok": True, "result": None}
     try:
         outcome["result"] = func(client, **kwargs)
