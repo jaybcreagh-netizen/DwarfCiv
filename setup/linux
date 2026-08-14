@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Run a DwarfCiv command in the Intel Linux environment required by DF/DFHack.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
+# Prefer an explicitly exported key. Otherwise, on macOS, load the Kimi key
+# from the user's encrypted login Keychain. The value is exported only to this
+# launcher process and its short-lived container; it is never written here.
+if [[ -z "${MOONSHOT_API_KEY:-}" ]] \
+        && [[ "$(uname -s)" == "Darwin" ]] \
+        && command -v security >/dev/null 2>&1; then
+    if kimi_key="$(security find-generic-password \
+            -a dwarfciv -s DwarfCiv/MOONSHOT_API_KEY -w 2>/dev/null)"; then
+        export MOONSHOT_API_KEY="${kimi_key}"
+    fi
+    unset kimi_key
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker-compatible runtime not found. Install/start OrbStack first." >&2
+    exit 1
+fi
+
+if docker compose version >/dev/null 2>&1; then
+    compose=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    compose=(docker-compose)
+else
+    echo "Docker Compose not found. Install it with: brew install docker-compose" >&2
+    exit 1
+fi
+
+exec "${compose[@]}" -f setup/compose.amd64.yml run --rm dwarfciv "$@"

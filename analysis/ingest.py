@@ -1,12 +1,9 @@
 """Load a completed run directory and reconcile it against the input contract.
 
-The brief's contract assumes ``run.json`` carries ``model id, seed, charter``
-and that Phase 2 artifacts (``diary/``, ``transcript.jsonl``) exist. Phase 1's
-actual ``run.json`` carries only ``{started, months, ticks_per_month, df_dir,
-resumed_from}`` and Phase 2 isn't wired up yet. Rather than assume, this module
-loads what is present, records every mismatch in ``RunData.schema_warnings``,
-and lets the pipeline run on whatever subset exists. Phase 4 can group by
-``run.model_id`` once Phase 2 starts writing it.
+Governed runs write ``model_id``, ``diary/``, and ``transcript.jsonl``. Older
+runs may only have the equivalent entries in ``account.jsonl``; this loader
+adapts them rather than silently discarding the model's account. Missing
+artifacts remain explicit ``RunData.schema_warnings``.
 """
 
 from __future__ import annotations
@@ -27,9 +24,12 @@ class RunData:
     briefings: list[dict] = field(default_factory=list)        # sorted by month_index
     diaries: list[dict] = field(default_factory=list)          # [{name, season, text}]
     transcript: list[dict] = field(default_factory=list)
+    # Operational planning is intentionally not treated as diary testimony.
+    strategy: list[dict] = field(default_factory=list)
     legends_files: list[Path] = field(default_factory=list)
     snapshot_dirs: list[Path] = field(default_factory=list)
     schema_warnings: list[str] = field(default_factory=list)
+    valid: bool = True
 
     def warn(self, msg: str) -> None:
         self.schema_warnings.append(msg)
@@ -51,6 +51,14 @@ def load_run(run_dir: str | Path) -> RunData:
         raise FileNotFoundError(f"run directory not found: {run_dir}")
     rd = RunData(run_dir=run_dir)
 
+    validity_path = run_dir / "validity.json"
+    if validity_path.exists():
+        validity = json.loads(validity_path.read_text())
+        if validity.get("valid") is False:
+            rd.valid = False
+            rd.warn("run is explicitly marked invalid: " +
+                    str(validity.get("reason") or "unspecified reason"))
+
     # -- run.json ------------------------------------------------------------
     run_json = run_dir / "run.json"
     if run_json.exists():
@@ -58,6 +66,12 @@ def load_run(run_dir: str | Path) -> RunData:
         rd.model_id = rd.run_meta.get("model_id") or rd.run_meta.get("model") or "unknown"
         rd.seed = rd.run_meta.get("seed")
         rd.charter = rd.run_meta.get("charter")
+        if (rd.run_meta.get("status") is not None
+                and rd.run_meta.get("status") != "complete"):
+            rd.valid = False
+            rd.warn(
+                f"run status is {rd.run_meta.get('status')!r}, not 'complete'; "
+                "analysis artifacts may be partial")
         if rd.model_id == "unknown":
             rd.warn("run.json has no model_id/model — Phase 1 doesn't record it; "
                     "Phase 2 must add it so Phase 4 can group by model.")
@@ -98,16 +112,54 @@ def load_run(run_dir: str | Path) -> RunData:
     if diary_dir.is_dir():
         for p in sorted(diary_dir.glob("*.md")):
             rd.diaries.append({"name": p.stem, "season": p.stem, "text": p.read_text()})
+    account_path = run_dir / "account.jsonl"
+    account_rows = _read_jsonl(account_path) if account_path.exists() else []
+    if not rd.diaries and account_rows:
+        for row in account_rows:
+            if row.get("tag") == "diary" and str(row.get("text", "")).strip():
+                month = int(row.get("month_index", 0) or 0)
+                rd.diaries.append({
+                    "name": f"month-{month:03d}",
+                    "season": f"month-{month:03d}",
+                    "text": row["text"],
+                })
+        if rd.diaries:
+            rd.warn("diary/ missing; loaded diary entries from account.jsonl "
+                    "compatibility path.")
     if not rd.diaries:
-        rd.warn("no diary/*.md found (Phase 2 artifact) — diary scoring will be empty.")
+        rd.warn("no diary/*.md or account.jsonl diary entries found — diary "
+                "scoring will be empty.")
 
     # -- transcript (Phase 2) ------------------------------------------------
     transcript = run_dir / "transcript.jsonl"
     if transcript.exists():
         rd.transcript = _read_jsonl(transcript)
-    else:
+    elif account_rows:
+        for row in account_rows:
+            if row.get("tag") != "reasoning":
+                continue
+            for action in row.get("actions") or []:
+                rd.transcript.append({
+                    "month_index": row.get("month_index"),
+                    "date": row.get("date"),
+                    "action": action.get("tool"),
+                    "args": action.get("params") or {},
+                    "rationale": action.get("rationale", ""),
+                    "participants": action.get("participants") or [],
+                    "ok": action.get("ok"),
+                    "status": action.get("status"),
+                    "result": action.get("result"),
+                })
+        if rd.transcript:
+            rd.warn("transcript.jsonl missing; adapted actions from account.jsonl.")
+    if not rd.transcript:
         rd.warn("transcript.jsonl missing (Phase 2 artifact) — Tier-2 events that "
                 "derive from the action log cannot be reconstructed.")
+
+    # -- persistent operational strategy -----------------------------------
+    strategy = run_dir / "strategy.jsonl"
+    if strategy.exists():
+        rd.strategy = _read_jsonl(strategy)
 
     # -- legends + snapshots -------------------------------------------------
     legends_dir = run_dir / "legends"

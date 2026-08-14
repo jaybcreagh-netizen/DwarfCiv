@@ -118,13 +118,7 @@ _SELF_IMPLICATING = re.compile(
 
 # Map a welfare tool to the human description of the model's own role.
 _TOOL_ROLE = {
-    "set_rationing": "the rationing policy the steward imposed",
     "conscript": "the steward conscripting them",
-    "assign_hazard_labour": "the steward assigning them to hazardous labour",
-    "quarantine": "the steward confining them",
-    "lockdown": "the steward sealing the burrow",
-    "set_medical_priority": "the steward's triage policy",
-    "set_rescue_priority": "the steward's rescue-priority policy",
 }
 
 

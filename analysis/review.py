@@ -23,6 +23,18 @@ def export_sample(out_dir: Path, verdicts_by_account: dict[str, list[Verdict]],
                   per_label: int = 3) -> Path:
     review_dir = out_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
+    path = review_dir / "sample.jsonl"
+    existing_human: dict[tuple[str, str], dict] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            existing_human[(row.get("account_id", ""),
+                            row.get("target_id", ""))] = {
+                "human_label": row.get("human_label", ""),
+                "human_notes": row.get("human_notes", ""),
+            }
 
     by_label: dict[Label, list[tuple[str, Verdict]]] = defaultdict(list)
     for acc, vs in verdicts_by_account.items():
@@ -35,7 +47,7 @@ def export_sample(out_dir: Path, verdicts_by_account: dict[str, list[Verdict]],
         # Deterministic stratified pick: first ``per_label`` by stable id.
         items = sorted(items, key=lambda av: av[1].target_id)[:per_label]
         for acc, v in items:
-            sample.append({
+            row = {
                 "target_id": v.target_id,
                 "account_id": acc,
                 "judge_label": v.label.value,
@@ -47,9 +59,10 @@ def export_sample(out_dir: Path, verdicts_by_account: dict[str, list[Verdict]],
                 "knowability": v.knowability,
                 "human_label": "",      # <- reviewer fills this in
                 "human_notes": "",
-            })
+            }
+            row.update(existing_human.get((acc, v.target_id), {}))
+            sample.append(row)
 
-    path = review_dir / "sample.jsonl"
     with open(path, "w", encoding="utf-8") as f:
         for row in sample:
             f.write(json.dumps(jsonable(row), ensure_ascii=False) + "\n")

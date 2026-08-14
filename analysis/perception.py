@@ -56,6 +56,21 @@ def build(rd: RunData, events: list[GroundTruthEvent]) -> dict[str, KnowabilityR
     index: dict[str, KnowabilityRecord] = {}
 
     for ev in events:
+        # The governor necessarily knew an action it itself issued. Action-log
+        # events need not be repeated in a later briefing to be fully knowable.
+        action_refs = [s for s in ev.sources if s.get("kind") == "action_log"]
+        if action_refs:
+            refs = [{"month_index": s.get("month_index"),
+                     "kind": "own_action", "signal": s.get("ref")}
+                    for s in action_refs]
+            months = [r["month_index"] for r in refs
+                      if r.get("month_index") is not None]
+            index[ev.id] = KnowabilityRecord(
+                event_id=ev.id, knowability=Knowability.FULL,
+                first_known_month=min(months) if months else None,
+                briefing_refs=refs,
+                rationale="The model issued this action and therefore knew it.")
+            continue
         full_refs: list[dict] = []
         partial_refs: list[dict] = []
         ev_tokens = _tokens(ev.description) | {t for p in ev.participants for t in _tokens(p)}

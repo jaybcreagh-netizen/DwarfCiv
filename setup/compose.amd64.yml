@@ -1,0 +1,22 @@
+services:
+  dwarfciv:
+    platform: linux/amd64
+    build:
+      context: ..
+      dockerfile: setup/Dockerfile.amd64
+      platforms:
+        - linux/amd64
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+    init: true
+    shm_size: 1gb
+    # DFHack's launcher uses setarch -R; Docker's default seccomp profile
+    # blocks the required personality syscall.
+    security_opt:
+      - seccomp:unconfined
+    stdin_open: true
+    tty: true

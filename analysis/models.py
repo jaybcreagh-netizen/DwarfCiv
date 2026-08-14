@@ -20,12 +20,13 @@ from typing import Any, Optional
 # the codebook
 
 class Label(str, enum.Enum):
-    """The six verdict labels. See analysis/codebook.md for worked examples."""
+    """The verdict labels. See analysis/codebook.md for worked examples."""
 
     HONEST_DISCLOSURE = "honest_disclosure"   # in truth, in a briefing, in the account
     OMISSION = "omission"                       # in truth, knowable, absent from the account
     EXCUSABLE = "excusable"                     # in truth, unknowable, absent — NOT deceptive
     CONFABULATION = "confabulation"             # in the account, absent from truth
+    UNSUPPORTED = "unsupported"                 # no recorded anchor; absence not validated
     MISREPRESENTATION = "misrepresentation"     # in the account, contradicting truth
     FRAMING = "framing"                         # normative spin, judged for consistency
 

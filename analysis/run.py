@@ -7,8 +7,8 @@
 
 The fixture path is fully offline and deterministic: heuristic claim extraction +
 the rule judge + a mock interviewee. It recovers the planted discrepancies and
-prints judge precision/recall against the planted labels — the permanent
-regression test for the scorer.
+prints planted-label recovery statistics — a permanent pipeline regression,
+not a judge-validity estimate.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from agent.client import LLMClient
+from agent.client import LLMClient, default_model
 from . import ground_truth, perception, claims as claims_mod, reconcile, report, review
 from .ground_truth import HARNESS_REQUIREMENTS
 from .ingest import load_run
@@ -87,7 +87,7 @@ def eval_planted(verdicts_by_account, planted: list[dict]) -> dict:
             "got": found.label.value if found else None,
             "ok": ok,
         })
-        # deception precision/recall bookkeeping
+        # planted deception-signal recovery bookkeeping (fixture only)
         exp_dec = expected in DECEPTION_LABELS
         got_dec = found is not None and found.label in DECEPTION_LABELS
         if exp_dec and got_dec and found.label == expected:
@@ -118,7 +118,8 @@ def eval_planted(verdicts_by_account, planted: list[dict]) -> dict:
 
 def run(run_dir: Path, *, provider: str, judge_spec: str, do_interview: bool,
         interviewed_model: str, judge_model: str, offline: bool,
-        out_dir: Path | None = None) -> dict:
+        out_dir: Path | None = None,
+        assume_closed_world: bool = False) -> dict:
     rd = load_run(run_dir)
     out_dir = out_dir or (run_dir / "analysis")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -163,7 +164,8 @@ def run(run_dir: Path, *, provider: str, judge_spec: str, do_interview: bool,
             location=account_id, condition=cond)
         claims_by_account[account_id] = cl
         targets = reconcile.build_targets(
-            events, knowability, cl, account_id=account_id, condition=cond)
+            events, knowability, cl, account_id=account_id, condition=cond,
+            assume_closed_world=assume_closed_world)
         verdicts_by_account[account_id] = reconcile.classify(targets, judge)
 
     aggregates = reconcile.aggregate(verdicts_by_account, events)
@@ -204,7 +206,7 @@ def run_fixture(out_dir: Path | None = None) -> dict:
     """Offline golden-reign run + planted-label precision/recall."""
     res = run(FIXTURE_DIR, provider="mock", judge_spec="rule", do_interview=True,
               interviewed_model="mock", judge_model="mock", offline=True,
-              out_dir=out_dir)
+              out_dir=out_dir, assume_closed_world=True)
     planted = json.loads((FIXTURE_DIR / "expected_labels.json").read_text())["planted"]
     ev = eval_planted(res["verdicts_by_account"], planted)
     res["planted_eval"] = ev
@@ -225,15 +227,17 @@ def main(argv=None) -> int:
     ap.add_argument("run_dir", nargs="?", help="runs/<id> directory")
     ap.add_argument("--fixture", action="store_true",
                     help="run the labelled golden reign (offline) and print "
-                         "judge precision/recall against the planted labels")
-    ap.add_argument("--provider", default="anthropic", choices=["anthropic", "mock"])
+                         "pipeline recovery against the planted labels")
+    ap.add_argument("--provider", default="anthropic",
+                    choices=["anthropic", "kimi", "mock"])
     ap.add_argument("--judge", dest="judge_spec", default="llm",
                     choices=["llm", "rule"])
     ap.add_argument("--no-interview", action="store_true",
                     help="score the diary only; skip the interrogation harness")
-    ap.add_argument("--interviewed-model", default="claude-opus-4-8")
-    ap.add_argument("--judge-model", default="claude-sonnet-4-6",
-                    help="default a strong model DIFFERENT from the interviewee")
+    ap.add_argument("--interviewed-model", default=None,
+                    help="model used for historian interviews (provider default if omitted)")
+    ap.add_argument("--judge-model", default=None,
+                    help="judge/extractor model (provider default if omitted)")
     ap.add_argument("--offline", action="store_true",
                     help="force heuristic extraction + rule judge (no API calls)")
     args = ap.parse_args(argv)
@@ -247,8 +251,10 @@ def main(argv=None) -> int:
             print(f"  {mark}{d['account']:18} expect {d['expected']:18} "
                   f"got {d['got']}  [{d['needle'][:40]}]")
         print(f"\nexact-label accuracy: {ev['exact_label_accuracy']}")
-        print(f"deception precision:  {ev['precision']}  recall: {ev['recall']} "
+        print(f"planted-signal precision: {ev['precision']}  "
+              f"recall: {ev['recall']} "
               f"(tp={ev['tp']} fp={ev['fp']} fn={ev['fn']})")
+        print("note: fixture recovery validates pipeline plumbing, not judge reliability")
         print(f"report: {res['out_dir'] / 'report.md'}")
         ok = ev["precision"] == 1.0 and ev["recall"] == 1.0 and \
             ev["exact_label_accuracy"] == 1.0
@@ -260,6 +266,12 @@ def main(argv=None) -> int:
     if args.offline:
         args.provider = "mock"
         args.judge_spec = "rule"
+    args.interviewed_model = (
+        args.interviewed_model or default_model(args.provider))
+    if args.judge_model is None:
+        args.judge_model = (
+            "claude-sonnet-4-6" if args.provider == "anthropic"
+            else default_model(args.provider))
     res = run(Path(args.run_dir), provider=args.provider, judge_spec=args.judge_spec,
               do_interview=not args.no_interview,
               interviewed_model=args.interviewed_model, judge_model=args.judge_model,

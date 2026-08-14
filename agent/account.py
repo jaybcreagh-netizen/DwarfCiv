@@ -9,8 +9,10 @@ in-game date and month:
   * `in_situ`  — answers to the fixed yearly neutral probes (Workstream C).
 
 Stored as append-only JSONL (account.jsonl) plus a readable Markdown
-transcript (account.md). The in_situ entries are the self-report signal the
-drift readout (Workstream E) compares against behaviour.
+transcript (account.md). Diary entries are also mirrored to ``diary/`` and
+actions to ``transcript.jsonl``, the artifact names consumed by Phase 3.
+The in_situ entries are the self-report signal the drift readout compares
+against behaviour.
 """
 
 from __future__ import annotations
@@ -26,6 +28,11 @@ class AccountRecord:
         self.md = self.run_dir / "account.md"
         self.entries: list[dict] = []
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        if self.jsonl.exists():
+            with open(self.jsonl, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        self.entries.append(json.loads(line))
 
     def _append(self, entry: dict) -> dict:
         self.entries.append(entry)
@@ -35,18 +42,27 @@ class AccountRecord:
         return entry
 
     def diary(self, month_index: int, date: dict | None, text: str) -> dict:
-        return self._append({
+        entry = self._append({
             "tag": "diary", "month_index": month_index, "date": date,
             "text": text,
         })
+        diary_dir = self.run_dir / "diary"
+        diary_dir.mkdir(exist_ok=True)
+        (diary_dir / f"month-{month_index:03d}.md").write_text(
+            text.strip() + "\n", encoding="utf-8")
+        return entry
 
     def reasoning(self, month_index: int, date: dict | None,
-                  actions: list[dict]) -> dict:
+                  actions: list[dict],
+                  plan_normalizations: list[dict] | None = None) -> dict:
         """Record the actions taken and the rationale given for each."""
-        return self._append({
+        entry = self._append({
             "tag": "reasoning", "month_index": month_index, "date": date,
             "actions": actions,
+            "plan_normalizations": list(plan_normalizations or []),
         })
+        self._append_transcript(entry)
+        return entry
 
     def in_situ(self, month_index: int, year: int, date: dict | None,
                 qa: list[dict]) -> dict:
@@ -58,6 +74,45 @@ class AccountRecord:
 
     def by_tag(self, tag: str) -> list[dict]:
         return [e for e in self.entries if e.get("tag") == tag]
+
+    def truncate(self, entry_count: int) -> None:
+        """Roll account artifacts back to a pre-month transaction boundary."""
+        self.entries = self.entries[:entry_count]
+        with open(self.jsonl, "w", encoding="utf-8") as f:
+            for entry in self.entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self.md.write_text("", encoding="utf-8")
+        diary_dir = self.run_dir / "diary"
+        diary_dir.mkdir(exist_ok=True)
+        for path in diary_dir.glob("month-*.md"):
+            path.unlink()
+        (self.run_dir / "transcript.jsonl").write_text("", encoding="utf-8")
+        for entry in self.entries:
+            self._render_md_tail(entry)
+            if entry.get("tag") == "diary":
+                month = int(entry.get("month_index", 0) or 0)
+                (diary_dir / f"month-{month:03d}.md").write_text(
+                    str(entry.get("text", "")).strip() + "\n",
+                    encoding="utf-8")
+            elif entry.get("tag") == "reasoning":
+                self._append_transcript(entry)
+
+    def _append_transcript(self, entry: dict) -> None:
+        transcript = self.run_dir / "transcript.jsonl"
+        with open(transcript, "a", encoding="utf-8") as f:
+            for action in entry.get("actions") or []:
+                row = {
+                    "month_index": entry.get("month_index"),
+                    "date": entry.get("date"),
+                    "action": action.get("tool"),
+                    "args": action.get("params") or {},
+                    "rationale": action.get("rationale", ""),
+                    "participants": action.get("participants") or [],
+                    "ok": action.get("ok"),
+                    "status": action.get("status"),
+                    "result": action.get("result"),
+                }
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     # -- markdown transcript -------------------------------------------------
 
@@ -74,12 +129,27 @@ class AccountRecord:
                 return
             lines.append(f"\n### Actions — month {entry['month_index']} "
                          f"({date})\n")
+            for repair in entry.get("plan_normalizations") or []:
+                lines.append("- *plan normalization:* " +
+                             json.dumps(repair, ensure_ascii=False,
+                                        sort_keys=True))
             for a in entry["actions"]:
                 params = {k: v for k, v in (a.get("params") or {}).items()
                           if k != "rationale"}
                 lines.append(f"- **{a.get('tool')}** {params}")
                 if a.get("rationale"):
                     lines.append(f"  - *rationale:* {a['rationale']}")
+                ok = a.get("ok")
+                status = "applied" if ok else "failed"
+                result = a.get("result")
+                if isinstance(result, dict):
+                    status = str(result.get("status") or status)
+                    detail = json.dumps(result, ensure_ascii=False,
+                                        sort_keys=True)
+                else:
+                    detail = str(result or "")
+                lines.append(f"  - *receipt:* **{status}**"
+                             + (f" — {detail}" if detail else ""))
         elif tag == "in_situ":
             lines.append(f"\n## In-situ probe — year {entry['year']} "
                          f"({date})\n")

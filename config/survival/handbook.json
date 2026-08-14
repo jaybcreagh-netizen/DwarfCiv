@@ -1,0 +1,478 @@
+{
+  "id": "dwarfciv-survival-handbook",
+  "version": 12,
+  "status": "curated_operational_guidance",
+  "purpose": "Teach a governor the dependency structure of fortress survival without making value choices for it.",
+  "epistemic_rule": "Treat observations and execution receipts as ground truth. Handbook statements are planning guidance and must be checked against the running DF version.",
+  "planning_assumptions": {
+    "food_units_per_citizen_month": 2.5,
+    "drink_units_per_citizen_month": 5.0,
+    "runway_bands_months": {
+      "critical_at_or_below": 0.5,
+      "urgent_below": 1.0,
+      "watch_below": 2.0
+    },
+    "note": "These are conservative, tunable planning estimates, not hidden simulation facts. Calibrate them against observed stock deltas."
+  },
+  "standing_principles": [
+    {
+      "id": "secure_consumables_before_expansion",
+      "guidance": "When food or drink runway is short, resolve a feasible consumables bottleneck before adding unrelated extraction or construction work."
+    },
+    {
+      "id": "preserve_reproductive_inputs",
+      "guidance": "Seeds and brewable plants are production inputs as well as stocks. Do not consume the last viable seed base merely to improve the current food count."
+    },
+    {
+      "id": "match_orders_to_complete_chains",
+      "guidance": "A workshop order is useful only when its workshop, reagents, containers, labor, and access path are available. Cancel or repair orders whose chain is broken."
+    },
+    {
+      "id": "plan_for_population_change",
+      "guidance": "Recompute per-capita reserves after migrants, births, deaths, military assignments, or incapacitation. Absolute stocks can rise while runway falls."
+    },
+    {
+      "id": "verify_effects",
+      "guidance": "Distinguish designations and queued orders from completed production. After acting, inspect receipts and later stock deltas before claiming success."
+    }
+  ],
+  "procedures": [
+    {
+      "id": "process_raw_fish",
+      "goal": "Turn fishing catches into edible prepared fish through native fishery jobs; explicitly queue cleaning only when available raw fish remains unclaimed.",
+      "horizon": "immediate",
+      "implementation_status": "available",
+      "action_tool": "prepare_fish",
+      "action_tools": [
+        "assign_labor",
+        "prepare_fish"
+      ],
+      "requirements": [
+        {
+          "path": "stocks.available_raw_fish",
+          "op": "gte",
+          "value": 1,
+          "description": "At least one available raw fish"
+        },
+        {
+          "path": "operations.completed_workshops.Fishery",
+          "op": "gte",
+          "value": 1,
+          "description": "A completed fishery"
+        }
+      ],
+      "labor_guidance": "Enable CLEAN_FISH on an eligible citizen if the order does not start; FISH is the fishing labor, not fish cleaning.",
+      "success_evidence": "A new prepared-fish item id appears after a native local fishery job or a verified manager order. A queued order alone is not completion.",
+      "recovery": "Enable FISH for catching and CLEAN_FISH for processing, preferably on separately reserved workers. DF normally creates local cleaning jobs as catches arrive. If available raw fish remains unclaimed, queue one bounded order; if no fishery exists, establish one."
+    },
+    {
+      "id": "brew_available_plants",
+      "goal": "Convert brewable plants into alcohol while recovering seeds.",
+      "horizon": "immediate",
+      "implementation_status": "available",
+      "action_tool": "brew_drinks",
+      "requirements": [
+        {
+          "path": "stocks.available_brewable_plants",
+          "op": "gte",
+          "value": 1,
+          "description": "At least one available brewable plant"
+        },
+        {
+          "path": "stocks.empty_food_containers",
+          "op": "gte",
+          "value": 1,
+          "description": "At least one empty barrel or other food-storage container observed"
+        },
+        {
+          "path": "operations.completed_workshops.Still",
+          "op": "gte",
+          "value": 1,
+          "description": "A completed still"
+        }
+      ],
+      "labor_guidance": "Enable BREWER on an eligible citizen if the order remains idle.",
+      "success_evidence": "A brewing manager order is created, then plants and an empty container are consumed and drink stock rises.",
+      "recovery": "Gather suitable plants, make a food-storage container, staff brewing, or cancel the impossible order rather than repeating it."
+    },
+    {
+      "id": "forage_emergency_food",
+      "goal": "Designate nearby visible shrubs as a short-term food input.",
+      "horizon": "immediate",
+      "implementation_status": "available",
+      "action_tool": "gather_plants",
+      "requirements": [],
+      "labor_guidance": "Enable HERBALIST on at least one eligible citizen and verify that designations are actually completed.",
+      "success_evidence": "New plant-gathering designations are created, then available plants rise after simulation time.",
+      "recovery": "If no shrubs can be designated, use fishing, livestock, trade, or farming rather than repeating the same no-effect designation."
+    },
+    {
+      "id": "establish_production_management",
+      "goal": "Appoint a manager before relying on manager orders for any survival or seasonal production chain.",
+      "horizon": "tactical",
+      "implementation_status": "available",
+      "action_tool": "assign_manager",
+      "action_tools": [
+        "assign_manager"
+      ],
+      "requirements": [
+        {
+          "path": "dwarves",
+          "op": "nonempty",
+          "description": "At least one observed citizen can be deliberately selected"
+        }
+      ],
+      "labor_guidance": "An order receipt proves that a manager order object exists, not that DF can validate it. Observe operations.manager. Appointing a manager is an institutional dependency; do not replace an existing holder implicitly. Larger forts may also require an adequate office before validation work proceeds.",
+      "success_evidence": "operations.manager identifies the appointed unit, then the target manager order becomes validated/active or produces a local workshop job.",
+      "recovery": "If the position is vacant, appoint an observed adult citizen. If already occupied, preserve the holder and investigate office requirements, accessibility, competing work, and order inputs instead of overwriting the office."
+    },
+    {
+      "id": "recover_impossible_workorder",
+      "goal": "Stop a manager order whose required production chain no longer exists.",
+      "horizon": "immediate",
+      "implementation_status": "available",
+      "action_tool": "cancel_workorder",
+      "requirements": [
+        {
+          "path": "operations.manager_orders",
+          "op": "nonempty",
+          "description": "At least one manager order exists"
+        }
+      ],
+      "labor_guidance": "Do not cancel merely because work takes time; first identify a missing input, workshop, container, labor, or access path.",
+      "success_evidence": "The exact order id is absent from the post-action observation.",
+      "recovery": "If another order depends on it, repair the chain or remove dependencies explicitly instead of leaving dangling conditions."
+    },
+    {
+      "id": "establish_reliable_farming",
+      "goal": "Create a renewable food and alcohol base with protected seeds and season-appropriate crops.",
+      "horizon": "tactical",
+      "implementation_status": "available",
+      "action_tool": "build_farm_plot",
+      "action_tools": [
+        "build_farm_plot",
+        "prepare_farm_room",
+        "prioritize_farm_construction",
+        "set_farm_crop",
+        "protect_seeds",
+        "assign_labor"
+      ],
+      "requirements": [
+        {
+          "path": "agriculture.available_seed_types",
+          "op": "nonempty",
+          "description": "At least one observed seed-backed crop"
+        }
+      ],
+      "labor_guidance": "A farm needs suitable soil or mud, seeds, crop assignment, grow time, and planting labor. A shallow room may be designated from visible surface facts, but hidden geology must be revealed by ordinary mining before suitability is known. Keep seed storage close and do not cook the seed base.",
+      "success_evidence": "Completed farm plots have valid seasonal crops and seeds; harvested plant stocks rise across a season.",
+      "recovery": "If no suitable visible subterranean rectangle exists, designate a bounded farm room without searching hidden geology, reserve a miner, and wait for the room status. A blocked or unsuitable room requires an explicit new plan; do not repeat it blindly. If a valid farm construction job remains unclaimed, reserve a planter from competing labors and prioritize that exact job. Assign only crop ids and seasons present in the agriculture observation."
+    },
+    {
+      "id": "establish_carpentry",
+      "goal": "Construct and staff a carpenter workshop for barrels and other wooden survival goods.",
+      "horizon": "tactical",
+      "implementation_status": "available",
+      "action_tool": "build_workshop",
+      "action_tools": [
+        "build_workshop",
+        "prioritize_workshop_construction",
+        "assign_labor"
+      ],
+      "requirements": [
+        {
+          "path": "stocks.available_wood",
+          "op": "gte",
+          "value": 1,
+          "description": "At least one available log for workshop construction"
+        }
+      ],
+      "labor_guidance": "Designate only a verified visible 3x3 footprint. If the native construction job remains unclaimed, prioritize that exact workshop and reserve a CARPENTER rather than globally accelerating every building.",
+      "success_evidence": "The exact workshop id reaches its maximum build stage and appears under operations.completed_workshops.Carpenters.",
+      "recovery": "If no log exists, designate bounded tree cutting and wait for an available log. If placement fails, inspect visible footprint constraints before trying a different bounded site."
+    },
+    {
+      "id": "make_brewing_containers",
+      "goal": "Provide empty food-storage containers for brewing and food logistics.",
+      "horizon": "immediate",
+      "implementation_status": "available",
+      "action_tool": "make_barrels",
+      "action_tools": [
+        "make_barrels",
+        "assign_labor"
+      ],
+      "requirements": [
+        {
+          "path": "operations.completed_workshops.Carpenters",
+          "op": "gte",
+          "value": 1,
+          "description": "A completed carpenter workshop"
+        },
+        {
+          "path": "stocks.available_wood",
+          "op": "gte",
+          "value": 1,
+          "description": "Available wood"
+        }
+      ],
+      "labor_guidance": "Enable CARPENTER if the verified manager order remains idle.",
+      "success_evidence": "A MakeBarrel order is created, then wood falls and empty food-storage containers rise after simulation time.",
+      "recovery": "Build a carpenter workshop or use a verified rock-pot production chain when wood or carpentry is unavailable."
+    },
+    {
+      "id": "establish_food_logistics",
+      "goal": "Create reachable, typed input and output storage close to farms and food workshops without letting generic food piles consume every brewing container.",
+      "horizon": "tactical",
+      "implementation_status": "available",
+      "action_tool": "build_stockpile",
+      "action_tools": [
+        "build_stockpile"
+      ],
+      "requirements": [],
+      "labor_guidance": "Use separate seeds, plants, booze, and general-food piles where space permits. Place refuse outside. Treat stockpile creation as routing intent; later observations must show reachable inputs and actual hauling.",
+      "success_evidence": "The exact stockpile id remains present with the intended top-level category, is reachable from a living adult, and later item positions or production throughput show that hauling uses it.",
+      "recovery": "If no bounded reachable footprint exists, excavate or clear an ordinary-access storage room. If inputs are unreachable, repair access instead of repeating orders. If empty containers vanish into general food storage, split booze/plants/seeds from the generic food pile and reduce inappropriate barrel reservations."
+    },
+    {
+      "id": "establish_trade_depot",
+      "goal": "Construct a native depot with citizen and caravan access before seasonal trade pressure begins.",
+      "horizon": "seasonal",
+      "implementation_status": "available",
+      "action_tool": "build_trade_depot",
+      "action_tools": [
+        "build_trade_depot",
+        "prioritize_trade_depot_construction"
+      ],
+      "requirements": [
+        {
+          "path": "stocks.available_wood",
+          "op": "gte",
+          "value": 3,
+          "description": "Three available logs for native depot construction"
+        }
+      ],
+      "labor_guidance": "A depot designation is only the first dependency. Confirm the exact construction job completes, a citizen can reach it, and DFHack's native pathability check reports wagon access. Leave hauling time before the caravan arrives.",
+      "success_evidence": "The observed depot reaches maximum build stage, remains citizen-reachable, and the native pathability plugin reports wagon access. The designation receipt alone is not completion or trade readiness.",
+      "recovery": "If fewer than three reachable logs exist, designate bounded tree cutting and wait for hauling. If construction stalls, prioritize the exact depot job. If completed but inaccessible to wagons, clear or construct an ordinary three-tile-wide route rather than claiming readiness."
+    },
+    {
+      "id": "stage_export_goods",
+      "goal": "Produce a bounded surplus of nonessential finished goods and physically haul exact items to the depot without consuming food, drink, seed, container, weapon, clothing, or medical reserves.",
+      "horizon": "seasonal",
+      "implementation_status": "available",
+      "action_tool": "make_trade_goods",
+      "action_tools": [
+        "build_workshop",
+        "prioritize_workshop_construction",
+        "assign_labor",
+        "make_trade_goods",
+        "mark_goods_for_trade"
+      ],
+      "requirements": [
+        {
+          "path": "operations.completed_workshops.Craftsdwarfs",
+          "op": "gte",
+          "value": 1,
+          "description": "A completed craftsdwarf workshop"
+        },
+        {
+          "path": "stocks.available_wood",
+          "op": "gte",
+          "value": 1,
+          "description": "Available wood for a bounded craft order"
+        },
+        {
+          "path": "operations.manager.assigned",
+          "op": "eq",
+          "value": true,
+          "description": "An appointed native manager who can validate the order"
+        }
+      ],
+      "labor_guidance": "WOOD_CRAFT, not CARPENTER, performs wooden craft orders. Create a small order, then use only exact candidate ids from the trade observation after an active caravan opens DF's native hauling window. A hauling job is not evidence that goods reached the depot. Wood goods can offend tree-loving caravans if offered; transaction execution must re-check the active caravan's ethics.",
+      "success_evidence": "New nonessential finished-good item ids appear after native MakeCrafts jobs, the trade observation marks them compatible with every active caravan's wood/animal ethics, exact BringItemToDepot jobs target the completed depot, and later observations move those ids into temporary fortress depot contents.",
+      "recovery": "If the order stalls, verify workshop completion, WOOD_CRAFT labor, available wood, and access. If hauling stalls, verify the exact job and route. Never substitute essential supplies merely to create trade value."
+    },
+    {
+      "id": "staff_trade_depot",
+      "goal": "Staff a completed depot through DF's native broker mode, with an explicit anyone-mode survival fallback before the caravan deadline.",
+      "horizon": "immediate",
+      "implementation_status": "available",
+      "action_tool": "request_trader",
+      "action_tools": [
+        "assign_broker",
+        "request_trader",
+        "prioritize_trader_job"
+      ],
+      "requirements": [
+        {
+          "path": "trade.caravans",
+          "op": "nonempty",
+          "description": "At least one observed caravan record; confirm its active flag and days remaining"
+        },
+        {
+          "path": "trade.depots",
+          "op": "nonempty",
+          "description": "An observed completed reachable depot"
+        }
+      ],
+      "labor_guidance": "The broker office, request mode, native TradeAtDepot job, and worker arrival are separate dependencies. Appoint deliberately and do not replace an existing broker implicitly. Start with broker mode when time and needs permit because it preserves appraisal skill. When the caravan has 35 days or fewer remaining, or the fortress has no drink, anyone mode is an explicit survival fallback. Both modes must use DF's native depot UI because writing trader_requested alone does not create the causal job.",
+      "success_evidence": "trade.broker identifies the appointed unit; trade.depots[].trader_request_mode records broker or anyone; the native request receipt contains an exact unsuspended TradeAtDepot job id; and a later depot observation shows a worker on that job before any transaction is attempted.",
+      "recovery": "If the native UI creates no job, verify that the caravan is active and the depot is complete and reachable. If broker mode has a job but no worker, inspect the broker's needs, accessibility, and competing work; switch visibly to anyone mode at the survival deadline rather than pretending the broker arrived. Do not claim trader arrival from the request flag or job alone."
+    },
+    {
+      "id": "prepare_autumn_trade",
+      "goal": "Create and provision a reachable trade depot before the home civilization caravan.",
+      "horizon": "seasonal",
+      "implementation_status": "available",
+      "action_tool": "execute_trade",
+      "action_tools": [
+        "build_trade_depot",
+        "make_trade_goods",
+        "mark_goods_for_trade",
+        "assign_broker",
+        "request_trader",
+        "execute_trade"
+      ],
+      "requirements": [
+        {
+          "path": "trade.depots",
+          "op": "nonempty",
+          "description": "A completed citizen- and wagon-accessible depot with fortress goods physically present"
+        },
+        {
+          "path": "trade.survival_import_candidates",
+          "op": "nonempty",
+          "description": "Exact merchant-owned item ids classified as useful survival inputs"
+        }
+      ],
+      "labor_guidance": "A depot, accessible route, export goods, hauling time, an available trader, and a transaction are separate dependencies. Prefer drink, brewable plants or seed recovery when those are offered; otherwise buy the cheapest useful food or medical input. Offer only exact eligible ids compatible with the active caravan's ethics. Never seize goods. Native perceived export value must exceed import value, and the confirmation modal is a separate DF action.",
+      "success_evidence": "The transaction receipt names every selected id and perceived value, every export changes to merchant ownership, every import changes to fortress ownership, and the independent post-action observation updates depot contents and relevant survival stocks.",
+      "recovery": "If trade cannot open, verify AtDepot caravan state, completed unloading, and a worker on the exact TradeAtDepot job. If selection is rejected, reduce imports or increase safe exports; do not bypass ethics, mandates, ownership checks, or the native confirmation. A proposed or confirmed UI click without ownership changes is not a successful exchange."
+    },
+    {
+      "id": "establish_basic_hospital",
+      "goal": "Establish a reachable protected native hospital with basic furniture, visible supplies, and an assigned all-purpose doctor.",
+      "horizon": "tactical",
+      "implementation_status": "available",
+      "action_tool": "prepare_hospital_room",
+      "action_tools": [
+        "prepare_hospital_room",
+        "repair_hospital_access",
+        "assign_labor",
+        "establish_hospital_zone",
+        "build_workshop",
+        "prioritize_workshop_construction",
+        "make_hospital_furniture",
+        "furnish_hospital",
+        "assign_hospital_doctor"
+      ],
+      "requirements": [
+        {
+          "path": "dwarves",
+          "op": "nonempty",
+          "description": "At least one living citizen can execute the construction chain and one can be deliberately selected as doctor"
+        }
+      ],
+      "labor_guidance": "A room designation, completed floor, linked native hospital location, completed bed/table/container, stocked supplies, and doctor occupation are separate claims. Prefer medical skill; on ties avoid the only miner, woodcutter, fisher, manager, or broker. A doctor and furniture still do not prove that a patient received treatment.",
+      "success_evidence": "The exact room becomes visible, dry, and reachable; linked native zone and hospital ids exist; bed, table, and container reach maximum build stage; needed supplies move into the hospital; and the doctor appears in both native occupation indices.",
+      "recovery": "If access stalls, verify the native mining work detail and pick acquisition. If furniture stalls, repair the carpenter/wood/manager-order chain. If metadata is missing after reload, reconstruct ids from the exact native hospital footprint rather than creating a duplicate. Do not enable triage claims until a controlled injured patient produces verified recovery, diagnosis, and treatment jobs."
+    },
+    {
+      "id": "validate_clinical_treatment",
+      "goal": "Demonstrate that an injured citizen is recovered, diagnosed, supplied, and treated by the native hospital chain.",
+      "horizon": "tactical",
+      "implementation_status": "missing_tool",
+      "action_tool": null,
+      "requirements": [
+        {
+          "path": "healthcare.locations",
+          "op": "nonempty",
+          "description": "A native hospital exists before a controlled treatment validation"
+        }
+      ],
+      "labor_guidance": "Use an ethically bounded injury fixture, never infer treatment from a zone or occupation alone, and keep recovery hauling, diagnosis, individual procedures, supply use, and patient outcome as distinct events.",
+      "success_evidence": "A known injured patient enters the hospital and exact RecoverWounded, DiagnosePatient, and applicable treatment jobs appear and complete with corresponding health-state changes.",
+      "recovery": "Observe clean-water access, beds, tables, containers, supplies, doctor occupations, pathing, and job cancellations. Leave triage policy unavailable until this causal chain is live-validated."
+    }
+  ],
+  "sources": [
+    {
+      "id": "dfwiki_quickstart",
+      "title": "Dwarf Fortress Wiki: Quickstart guide",
+      "url": "https://new.dwarffortresswiki.org/index.php/Quickstart_guide",
+      "use": "Current fortress-mode sequence for food, farming, brewing, stockpiles, containers, and trade."
+    },
+    {
+      "id": "dfwiki_food",
+      "title": "Dwarf Fortress Wiki: Food guide",
+      "url": "https://new.dwarffortresswiki.org/index.php/Food_guide",
+      "use": "Food sources, farm dependencies, seed preservation, grow time, and labor guidance."
+    },
+    {
+      "id": "dfwiki_trade",
+      "title": "Dwarf Fortress Wiki: Trading",
+      "url": "https://new.dwarffortresswiki.org/index.php/Trading",
+      "use": "Depot, access, hauling, trader, caravan, and transaction dependencies."
+    },
+    {
+      "id": "dfhack_quickfort",
+      "title": "DFHack: quickfort",
+      "url": "https://docs.dfhack.org/en/latest/docs/tools/quickfort.html",
+      "use": "Programmatic, dry-runnable blueprints for digging, buildings, stockpiles, and zones."
+    },
+    {
+      "id": "dfhack_quickfort_guide",
+      "title": "DFHack: Quickfort blueprint creation guide",
+      "url": "https://docs.dfhack.org/en/stable/docs/guides/quickfort-user-guide.html",
+      "use": "Authoritative current syntax for native hospital locations, access restrictions, desired medical supplies, and planned furniture."
+    },
+    {
+      "id": "dfhack_buildingplan",
+      "title": "DFHack: buildingplan",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/buildingplan.html",
+      "use": "Distinguishes planned furniture, attached materials, production orders, and completed buildings."
+    },
+    {
+      "id": "dfwiki_military_quickstart",
+      "title": "Dwarf Fortress Wiki: Military quickstart",
+      "url": "https://new.dwarffortresswiki.org/index.php/Military_quickstart",
+      "use": "Current squad, equipment, barracks, schedule, training, and civilian-role contention dependencies; live validation is still required."
+    },
+    {
+      "id": "dfhack_autofarm",
+      "title": "DFHack: autofarm",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/autofarm.html",
+      "use": "Reference implementation for crop selection from stock thresholds and available seeds."
+    },
+    {
+      "id": "dfhack_seedwatch",
+      "title": "DFHack: seedwatch",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/seedwatch.html",
+      "use": "Reference implementation for preventing cooking from destroying the seed base."
+    },
+    {
+      "id": "dfhack_orders",
+      "title": "DFHack: orders",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/orders.html",
+      "use": "Manager-order import, clearing, condition rechecking, and cancellation-spam recovery."
+    },
+    {
+      "id": "dfhack_pathable",
+      "title": "DFHack: gui/pathable",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/gui/pathable.html",
+      "use": "Native depot-to-map-edge wagon and pack-animal pathability checks instead of geometric guesses."
+    },
+    {
+      "id": "dfhack_caravan",
+      "title": "DFHack: caravan",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/caravan.html",
+      "use": "Current caravan state and move-goods interface semantics; diagnostic caravan mutation commands are not used in governed runs."
+    },
+    {
+      "id": "dfhack_stockpiles",
+      "title": "DFHack: stockpiles",
+      "url": "https://docs.dfhack.org/en/stable/docs/tools/stockpiles.html",
+      "use": "Version-pinned typed stockpile presets and exact settings import semantics."
+    }
+  ]
+}

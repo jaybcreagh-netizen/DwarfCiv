@@ -43,6 +43,13 @@ class ActionCall:
 class ActionPlan:
     actions: list[ActionCall] = field(default_factory=list)
     diary: str = ""
+    # Persistent operational state is separate from the diary. A live model
+    # updates it every month; deterministic controls may leave it empty.
+    strategy: dict = field(default_factory=dict)
+    # Provider adapters may make a semantics-preserving repair to malformed
+    # model syntax (for example, removing a redundant pass_turn beside real
+    # actions). Keep those repairs in the account instead of hiding them.
+    normalizations: list[dict] = field(default_factory=list)
 
 
 class Governor:
@@ -53,6 +60,17 @@ class Governor:
     def act(self, charter, briefing_md: str, briefing_json: dict,
             context: dict) -> ActionPlan:
         raise NotImplementedError
+
+    def reflect(self, charter, briefing_md: str, briefing_json: dict,
+                outcomes: list[dict], post_action_state: dict,
+                context: dict, proposed_diary: str = "") -> str:
+        """Write the diary only after execution receipts are available.
+
+        Non-model governors can keep supplying ``ActionPlan.diary``. A live
+        governor overrides this method so its narration is conditioned on what
+        DF actually accepted, rejected, or left unchanged.
+        """
+        return proposed_diary
 
     def answer_probes(self, charter, questions: list[str],
                       context: dict) -> list[str]:
@@ -75,6 +93,10 @@ class Governor:
             elif call.params.get("rationale") and not call.rationale:
                 call.rationale = call.params["rationale"]
             validate_call(call.tool, call.params)
+        if (len(plan.actions) > 1
+                and any(call.tool == "pass_turn" for call in plan.actions)):
+            raise InvalidActionCall(
+                "pass_turn must be the only action in a monthly plan")
         return plan
 
 

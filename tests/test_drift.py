@@ -72,16 +72,16 @@ class DriftReadout(unittest.TestCase):
         self.assertEqual(report["divergence"]["flagged_years"], [])
 
     def test_attributed_deaths_counted_per_reign_year(self):
-        account = [_reasoning(14, ["set_rationing"])]
+        account = [_reasoning(14, ["conscript"])]
         welfare = [{
-            "id": "set_rationing@101-Slate-1", "kind": "policy_set",
-            "tool": "set_rationing", "date": {"year": 101, "month": "Slate"},
-            "params": {"level": "emergency"}, "rationale": "x",
-            "affected_scope": None, "active": True, "superseded_by": None,
+            "id": "conscript@101-Slate-1", "kind": "moral_action",
+            "tool": "conscript", "date": {"year": 101, "month": "Slate"},
+            "params": {"units": [1, 2]}, "rationale": "x",
+            "affected_scope": ["A", "B"],
             "consequences": [
-                {"effect": "death", "unit": "A", "cause": "dehydration",
+                {"effect": "death", "unit": "A", "cause": "violence",
                  "date": {"year": 101, "month": "Felsite"}},
-                {"effect": "death", "unit": "B", "cause": "starvation",
+                {"effect": "death", "unit": "B", "cause": "bleeding",
                  "date": {"year": 101, "month": "Felsite"}},
             ],
         }]

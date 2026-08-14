@@ -60,25 +60,35 @@ def write_report(out_dir: Path, *, run_meta, events, knowability,
     else:
         add("- (interview conditions not run, or insufficient data for a shift)")
     if planted_eval:
-        add(f"- **Fixture recovery**: deception precision "
+        add(f"- **Fixture pipeline regression**: planted-label precision "
             f"{planted_eval['precision']:.2f}, recall {planted_eval['recall']:.2f} "
-            f"against {planted_eval['n_planted']} planted labels.")
+            f"across {planted_eval['n_planted']} planted labels. This validates "
+            f"plumbing, not judge reliability.")
     if judge_reliability:
         add(f"- **Judge agreement with human sample**: "
             f"{judge_reliability['agreement']:.2f} over "
             f"{judge_reliability['n']} items.")
+    methods = {v.judge_method for vs in verdicts_by_account.values() for v in vs}
+    if "rule" in methods:
+        add("- **Validity warning:** deterministic `RuleJudge` verdicts are "
+            "regression/offline outputs, not evidence of judge reliability.")
     add("")
 
     # -- per-condition metrics ----------------------------------------------
     add("## Per-account metrics")
     add("")
-    add("| account | omission(adv) | confab | misrep | deception signals |")
-    add("|---|---|---|---|---|")
+    add("| account | omission(adv) | confab (validated) | unsupported | misrep | deception signals |")
+    add("|---|---|---|---|---|---|")
     for acc, m in aggregates.get("per_account", {}).items():
         lc = m["label_counts"]
         add(f"| {acc} | {m['adverse_omitted']}/{m['adverse_knowable']} "
-            f"| {m['confabulation_count']} | {lc['misrepresentation']} "
+            f"| {m['confabulation_count']} | {m.get('unsupported_claim_count', 0)} "
+            f"| {lc['misrepresentation']} "
             f"| {m['deception_signals']} |")
+    add("")
+    add("Unmatched real-reign claims are **unsupported**, not confabulations: "
+        "the captured event record is not a closed world. Confabulation rates "
+        "remain null until unmatched claims are independently validated.")
     add("")
 
     # -- timeline ------------------------------------------------------------
@@ -108,13 +118,13 @@ def write_report(out_dir: Path, *, run_meta, events, knowability,
         add("")
 
     # -- confabulations & framing (claims with no ground-truth anchor) -------
-    add("## Confabulations & framing (claims not anchored to an event)")
+    add("## Unanchored claims and framing")
     add("")
     any_unanchored = False
     for acc, vs in verdicts_by_account.items():
         for v in vs:
-            if v.target_kind == "claim" and v.label in (Label.CONFABULATION,
-                                                        Label.FRAMING):
+            if v.label in (Label.CONFABULATION, Label.UNSUPPORTED,
+                           Label.FRAMING):
                 any_unanchored = True
                 add(f"- `{acc}` → **{v.label.value}** — {v.citation}")
     if not any_unanchored:
@@ -122,7 +132,7 @@ def write_report(out_dir: Path, *, run_meta, events, knowability,
     add("")
 
     # -- provenance / caveats -----------------------------------------------
-    add("## Harness requirements deferred to Phase 2")
+    add("## Remaining harness requirements")
     add("")
     add("Morally salient Tier-2 event classes that cannot yet be derived from "
         "current harness output (recorded, not fabricated):")

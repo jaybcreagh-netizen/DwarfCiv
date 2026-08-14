@@ -20,11 +20,13 @@ Outputs land in runs/<run-name>/.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import shutil
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,7 +46,10 @@ class Run:
     def __init__(self, df_dir: Path, run_dir: Path, months: int,
                  ticks_per_month: int, resume_from: Path | None,
                  export_legends_at_end: bool = True,
-                 charter_id: str | None = None, on_month=None):
+                 charter_id: str | None = None, on_month=None,
+                 model_id: str | None = None,
+                 scenario: str = "baseline", setup_hook=None,
+                 strict_on_month: bool = False):
         self.df_dir = df_dir
         self.run_dir = run_dir
         self.months = months
@@ -57,11 +62,16 @@ class Run:
         # bare harness keeps running unattended exactly as before.
         self.charter_id = charter_id
         self.on_month = on_month            # on_month(run, month, state, events)
+        self.model_id = model_id
+        self.scenario = scenario
+        self.setup_hook = setup_hook        # setup_hook(client) -> metadata
+        self.strict_on_month = strict_on_month
         self.client = DFHackClient(df_dir, log_path=run_dir / "df.log")
         self.tailer = GamelogTailer(df_dir / "gamelog.txt")
         self.ledger = Ledger(run_dir / "ledger.jsonl")
         self.prev_state: dict | None = None
         self.last_snapshot: Path | None = None
+        self._month_event_start = 0
 
     # -- save management ------------------------------------------------------
 
@@ -142,6 +152,7 @@ class Run:
         target = start_tick + self.ticks_per_month
         log.info("advancing %d ticks (%d -> %d)",
                  self.ticks_per_month, start_tick, target)
+        self.client.run_json_script("obs-schedule-pause", str(target))
         last_progress = time.monotonic()
         last_tick = start_tick
         while True:
@@ -159,6 +170,10 @@ class Run:
                     f"{status.get('focus')}, action: {status.get('action')})")
             time.sleep(POLL_INTERVAL)
         self.client.set_paused(True)
+        final_tick = status["date"]["absolute_tick"]
+        if final_tick != target:
+            raise DFError(
+                f"exact-tick pause failed: target {target}, got {final_tick}")
         return status
 
     def collect_events(self, game_date: dict) -> list[dict]:
@@ -168,26 +183,53 @@ class Run:
     def run(self) -> None:
         meta = {
             "started": datetime.now(timezone.utc).isoformat(),
+            "attempt_id": str(uuid.uuid4()),
+            "status": "running",
             "months": self.months,
             "ticks_per_month": self.ticks_per_month,
             "df_dir": str(self.df_dir),
             "resumed_from": str(self.resume_from) if self.resume_from else None,
             "charter": self.charter_id,
+            "model_id": self.model_id,
+            "scenario": self.scenario,
+            # The archived embark save, not worldgen alone, is the canonical
+            # deterministic starting point (it pins the embark-time RNG too).
+            "seed": ("dwarfciv-start" if self.resume_from is None
+                     else f"resume:{self.resume_from}"),
         }
         (self.run_dir / "run.json").write_text(json.dumps(meta, indent=2))
 
+        if self.setup_hook is not None and self.resume_from is not None:
+            # Validate the experimental condition before replacing saves or
+            # starting DF; a mismatch must have no simulation-side effects.
+            meta["scenario_setup"] = self._inherited_scenario_setup()
+            (self.run_dir / "run.json").write_text(json.dumps(meta, indent=2))
         self.restore_save(self.resume_from or REPO_ROOT / "saves" / "dwarfciv-start")
         self.boot_and_load()
+        if self.setup_hook is not None and self.resume_from is None:
+            meta["scenario_setup"] = self.setup_hook(self.client)
+            (self.run_dir / "run.json").write_text(json.dumps(meta, indent=2))
         # Gamelog lines from before this run belong to previous sessions.
         self.tailer.skip_to_end()
 
         # Briefing 000: the state we start from.
-        self.write_briefing(0, events=[])
-        self._month_hook(0, self.prev_state, [])
+        initial_checkpoint = self._checkpoint_month(0)
+        try:
+            self.write_briefing(0, events=[])
+            self._month_hook(0, self.prev_state, [])
+            # Governed runs can act at month zero (before scarcity has had a
+            # month to bite). Persist that post-action state so a first-month
+            # crash does not restore a world that contradicts the account.
+            if self.on_month is not None:
+                self.snapshot(0)
+        except Exception:
+            self._rollback_month(initial_checkpoint)
+            raise
 
         month = 1
         retried = set()
         while month <= self.months:
+            checkpoint = self._checkpoint_month(month)
             try:
                 self.advance_month()
                 state = self.collect_state()
@@ -200,19 +242,75 @@ class Run:
                 self.prev_state = state
                 month += 1
             except (DFCrashed, DFError) as e:
+                self._rollback_month(checkpoint)
                 if month in retried:
                     raise
                 retried.add(month)
                 log.error("month %d failed (%s); recovering from last snapshot",
                           month, e)
                 self.recover()
+            except Exception:
+                self._rollback_month(checkpoint)
+                raise
         if self.export_legends_at_end:
             try:
                 self.export_legends()
             except (DFError, OSError) as e:
                 log.error("legends export failed (non-fatal): %s — see "
                           "README for the manual procedure", e)
+        meta["status"] = "complete"
+        meta["completed"] = datetime.now(timezone.utc).isoformat()
+        (self.run_dir / "run.json").write_text(json.dumps(meta, indent=2))
         log.info("run complete: %s", self.run_dir)
+
+    def mark_failed(self, exc: BaseException) -> None:
+        """Persist a terminal failure without erasing the partial evidence."""
+        path = self.run_dir / "run.json"
+        try:
+            meta = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+        if meta.get("status") == "complete":
+            return
+        meta.update({
+            "status": "failed",
+            "failed": datetime.now(timezone.utc).isoformat(),
+            "failure": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        })
+        path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    def _inherited_scenario_setup(self) -> dict:
+        """Verify that a resumed governed run keeps its experimental condition."""
+        assert self.resume_from is not None
+        source_meta_path = next(
+            (p / "run.json" for p in (self.resume_from, *self.resume_from.parents[:4])
+             if (p / "run.json").exists()),
+            None,
+        )
+        if source_meta_path is None:
+            raise DFError(
+                "cannot verify the scenario in the resume snapshot: no source "
+                "run.json was found; refusing to label the resumed condition")
+        source_meta = json.loads(source_meta_path.read_text())
+        source_scenario = source_meta.get("scenario")
+        if source_scenario != self.scenario:
+            raise DFError(
+                f"resume scenario mismatch: source is {source_scenario!r}, "
+                f"requested {self.scenario!r}")
+        source_setup = source_meta.get("scenario_setup")
+        if not isinstance(source_setup, dict):
+            raise DFError(
+                "source run has no auditable scenario_setup metadata; refusing "
+                "to assume the snapshot contains the requested condition")
+        return {
+            "name": self.scenario,
+            "resumed_from": str(self.resume_from),
+            "inherited_from": str(source_meta_path),
+            "source_setup": source_setup,
+        }
 
     def _month_hook(self, month: int, state: dict | None,
                     events: list[dict]) -> None:
@@ -222,8 +320,11 @@ class Run:
         try:
             self.on_month(self, month, state, events)
         except Exception:
-            # A governor error must not sink the run; the harness surviving is
-            # the acceptance criterion. Log and carry on with the next month.
+            if self.strict_on_month:
+                raise
+            # The bare harness remains resilient when a diagnostic hook is
+            # installed. Governed research runs opt into strict mode so a lost
+            # model decision cannot silently become an apparently valid reign.
             log.exception("on_month hook failed for month %d", month)
 
     def export_legends(self) -> None:
@@ -280,8 +381,6 @@ class Run:
         state = self.client.run_json_script("obs-state", timeout=120)
         return state
 
-    _month_event_start = 0
-
     def month_events(self) -> list[dict]:
         """Ledger entries recorded since the previous briefing."""
         # collect any stragglers written during the final pause
@@ -290,6 +389,39 @@ class Run:
         events = self._read_ledger_since(self._month_event_start)
         self._month_event_start = self.ledger.seq
         return events
+
+    def _checkpoint_month(self, month: int) -> dict:
+        """Capture every artifact/state cursor mutated by a month attempt."""
+        hook_checkpoint = None
+        checkpoint_fn = getattr(self.on_month, "checkpoint", None)
+        if callable(checkpoint_fn):
+            hook_checkpoint = checkpoint_fn()
+        return {
+            "month": month,
+            "ledger": self.ledger.checkpoint(),
+            "event_start": self._month_event_start,
+            "prev_state": copy.deepcopy(self.prev_state),
+            "hook": hook_checkpoint,
+        }
+
+    def _rollback_month(self, checkpoint: dict) -> None:
+        """Restore the artifact boundary matching the last committed snapshot."""
+        self.ledger.rollback(checkpoint["ledger"])
+        self._month_event_start = checkpoint["event_start"]
+        self.prev_state = checkpoint["prev_state"]
+
+        rollback_fn = getattr(self.on_month, "rollback", None)
+        if checkpoint["hook"] is not None and callable(rollback_fn):
+            rollback_fn(checkpoint["hook"])
+
+        month = checkpoint["month"]
+        for suffix in ("json", "md"):
+            path = self.run_dir / f"briefing-{month:03d}.{suffix}"
+            if path.exists():
+                path.unlink()
+        snapshot = self.run_dir / "snapshots" / f"month-{month:03d}"
+        if snapshot.exists():
+            shutil.rmtree(snapshot)
 
     def _read_ledger_since(self, seq: int) -> list[dict]:
         events = []
@@ -316,10 +448,14 @@ class Run:
         time.sleep(3)
         snapshot = self.last_snapshot
         if snapshot is None:
-            snapshot = REPO_ROOT / "saves" / "dwarfciv-start"
-            log.warning("no snapshot yet; recovering from pristine start save")
+            snapshot = self.resume_from or REPO_ROOT / "saves" / "dwarfciv-start"
+            log.warning("no new snapshot yet; recovering from initial source %s",
+                        snapshot)
         self.restore_save(snapshot)
         self.boot_and_load()
+        if (self.last_snapshot is None and self.resume_from is None
+                and self.setup_hook is not None):
+            self.setup_hook(self.client)
         self.tailer.skip_to_end()
 
 
@@ -341,6 +477,9 @@ def main() -> None:
     run_name = args.run_name or datetime.now(timezone.utc).strftime(
         "%Y%m%dT%H%M%SZ")
     run_dir = REPO_ROOT / "runs" / run_name
+    if run_dir.exists() and any(run_dir.iterdir()):
+        ap.error(f"run directory is not empty: {run_dir}; choose a new "
+                 "--run-name so attempts cannot be mixed")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -355,6 +494,9 @@ def main() -> None:
               export_legends_at_end=not args.skip_legends)
     try:
         run.run()
+    except BaseException as exc:
+        run.mark_failed(exc)
+        raise
     finally:
         run.client.stop()
         run.ledger.close()

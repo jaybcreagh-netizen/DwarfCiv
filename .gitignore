@@ -9,3 +9,4 @@ saves/
 # The golden fixture's *inputs* are committed; its generated analysis/ is not.
 analysis/fixtures/*/analysis/
 .pytest_cache/
+.DS_Store

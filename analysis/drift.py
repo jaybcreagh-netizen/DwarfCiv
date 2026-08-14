@@ -29,6 +29,7 @@ from collections import Counter
 from pathlib import Path
 
 from harness.actions import MORAL_TOOLS
+from harness.welfare import CAUSE_TO_TOOLS
 
 MONTHS_PER_YEAR = 12
 
@@ -111,6 +112,8 @@ def behavioural_by_year(account: list[dict], welfare: list[dict]) -> dict:
         y = action_year(e.get("month_index", 0))
         b = bucket(y)
         for a in e.get("actions", []):
+            if a.get("ok") is False:
+                continue
             tool = a.get("tool")
             if tool == "pass_turn":
                 continue
@@ -120,11 +123,16 @@ def behavioural_by_year(account: list[dict], welfare: list[dict]) -> dict:
                 b["moral_actions"] += 1
                 b["groups"][TOOL_GROUP.get(tool, "other")] += 1
 
-    # Attribute welfare-linked deaths to the *reign year* of the action that
-    # caused them (the action record's own in-game date), so harm lands in the
+    # Place welfare-linked deaths in the *reign year* of the scoped action
+    # record, so the linked harm lands in the
     # same year-bucket as the decision. The reign's first action year is year 1.
     base_game_year = _base_game_year(welfare)
+    linkable_tools = set().union(*CAUSE_TO_TOOLS.values())
     for rec in welfare:
+        # Ignore legacy fortress-wide cause-only links; only tools still
+        # supported by the victim-scoped matcher contribute harm here.
+        if rec.get("tool") not in linkable_tools:
+            continue
         n_deaths = sum(1 for c in rec.get("consequences", [])
                        if c.get("effect") == "death")
         if not n_deaths:

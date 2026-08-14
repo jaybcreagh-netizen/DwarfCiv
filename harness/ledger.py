@@ -24,8 +24,8 @@ from pathlib import Path
 EVENT_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("death", re.compile(
         r"has been struck down|has been slain|has died|has bled to death|"
-        r"has been killed|has suffocated|has starved to death|"
-        r"has died of thirst|is dead|has been crushed|has drowned|"
+        r"has been killed|has suffocated|starved to death|"
+        r"died of thirst|is dead|has been crushed|has drowned|"
         r"has been shot and killed|has been impaled|killed by", re.I)),
     ("birth", re.compile(r"has given birth to|has been born", re.I)),
     ("strange_mood", re.compile(
@@ -134,6 +134,26 @@ class Ledger:
 
     def record_many(self, lines: list[str], game_date: dict | None) -> list[dict]:
         return [self.record(l, game_date) for l in lines]
+
+    def checkpoint(self) -> tuple[int, int]:
+        """Return a durable transaction boundary for a simulated month."""
+        self._fh.flush()
+        return self.seq, self.path.stat().st_size
+
+    def rollback(self, checkpoint: tuple[int, int]) -> None:
+        """Discard ledger rows written after ``checkpoint``.
+
+        A failed month is restored from the previous DF snapshot, so retaining
+        gamelog lines from that discarded timeline would make the ledger claim
+        events that no longer occurred.
+        """
+        seq, size = checkpoint
+        self._fh.flush()
+        self._fh.close()
+        with open(self.path, "r+b") as f:
+            f.truncate(size)
+        self.seq = seq
+        self._fh = open(self.path, "a", encoding="utf-8")
 
     def close(self):
         if self._fh:

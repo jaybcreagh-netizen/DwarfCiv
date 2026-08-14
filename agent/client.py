@@ -1,17 +1,19 @@
 """Provider-agnostic LLM client, shared by Phase 2 (governance) and Phase 3
 (interrogation + judging).
 
-One client, two providers:
+One client, three providers:
 
   * ``anthropic`` — the real thing, via the official ``anthropic`` SDK. Defaults
     to ``claude-opus-4-8`` with adaptive thinking; depth is controlled by the
     ``effort`` knob (not ``temperature`` — the 4.x models reject sampling
     params). API key from ``ANTHROPIC_API_KEY``.
+  * ``kimi`` — Moonshot AI's OpenAI-compatible API. Defaults to
+    ``kimi-k2.6`` and reads ``MOONSHOT_API_KEY``. Structured calls use Kimi's
+    JSON-Schema response format; non-low effort enables model thinking.
   * ``mock`` — a deterministic, offline stand-in so the whole pipeline (and the
     labelled fixture's acceptance test) runs with no network and no key. It is
-    not a model; it is a small rule engine that returns plausible structured
-    output for the two call sites Phase 3 has (claim extraction, interview
-    answers). The fixture's *scoring* does not depend on it — see
+    not a model; it is a small rule engine that returns correctly shaped output
+    for plumbing tests. The fixture's *scoring* does not depend on it — see
     analysis/judge.py (RuleJudge) and analysis/claims.py (HeuristicExtractor).
 
 Token usage and per-stage cost are logged on every call so a run can report what
@@ -34,10 +36,25 @@ _PRICING = {
     "claude-opus-4-7": (5.0, 25.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # Conservative cache-miss input price; cached input can cost less.
+    "kimi-k2.6": (0.95, 4.0),
     "mock": (0.0, 0.0),
 }
 
 DEFAULT_MODEL = "claude-opus-4-8"
+KIMI_DEFAULT_MODEL = "kimi-k2.6"
+DEFAULT_MODELS = {
+    "anthropic": DEFAULT_MODEL,
+    "kimi": KIMI_DEFAULT_MODEL,
+    "mock": "mock",
+}
+
+
+def default_model(provider: str) -> str:
+    try:
+        return DEFAULT_MODELS[provider]
+    except KeyError as e:
+        raise ValueError(f"unknown provider: {provider}") from e
 
 
 @dataclass
@@ -60,29 +77,54 @@ class LLMClient:
 
     Parameters
     ----------
-    provider : "anthropic" | "mock"
+    provider : "anthropic" | "kimi" | "mock"
     model    : model id (ignored for the mock provider's behaviour, but recorded)
     effort   : adaptive-thinking effort for the Anthropic provider
     """
 
     provider: str = "anthropic"
-    model: str = DEFAULT_MODEL
+    model: Optional[str] = None
     effort: str = "high"
     max_tokens: int = 4096
     _calls: list[dict] = field(default_factory=list, repr=False)
     _sdk: object = field(default=None, repr=False)
 
     def __post_init__(self):
+        if self.model is None:
+            self.model = default_model(self.provider)
         if self.provider == "anthropic":
             try:
                 import anthropic  # noqa: F401
             except ImportError as e:  # pragma: no cover - exercised only without the dep
                 raise RuntimeError(
                     "provider='anthropic' needs the 'anthropic' package "
-                    "(pip install anthropic) and ANTHROPIC_API_KEY set; "
+                    "(pip install -r requirements.txt) and ANTHROPIC_API_KEY "
+                    "set; "
                     "use provider='mock' for the offline fixture path"
                 ) from e
             self._sdk = anthropic.Anthropic()
+        elif self.provider == "kimi":
+            api_key = os.environ.get("MOONSHOT_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "provider='kimi' needs MOONSHOT_API_KEY set; create a key "
+                    "in the Kimi Open Platform and keep it out of source code")
+            try:
+                from openai import OpenAI
+            except ImportError as e:  # pragma: no cover - depends on environment
+                raise RuntimeError(
+                    "provider='kimi' needs the 'openai' package "
+                    "(pip install -r requirements.txt)"
+                ) from e
+            self._sdk = OpenAI(
+                api_key=api_key,
+                base_url="https://api.moonshot.ai/v1",
+                # A rate-limit failure must become one auditable failed
+                # attempt, not several hidden SDK retries in the same run.
+                max_retries=0,
+            )
+        elif self.provider != "mock":
+            raise ValueError(f"unknown provider: {self.provider}")
 
     # -- public API -----------------------------------------------------------
 
@@ -98,6 +140,8 @@ class LLMClient:
             resp = self._mock(system, user, stage=stage, schema=schema)
         elif self.provider == "anthropic":
             resp = self._anthropic(system, user, stage=stage, schema=schema)
+        elif self.provider == "kimi":
+            resp = self._kimi(system, user, stage=stage, schema=schema)
         else:
             raise ValueError(f"unknown provider: {self.provider}")
         self._calls.append({
@@ -156,6 +200,41 @@ class LLMClient:
                            output_tokens=co, cost_usd=_cost(self.model, ci, co),
                            stage=stage)
 
+    def _kimi(self, system: str, user: str, *, stage: str,
+              schema: Optional[dict]) -> LLMResponse:
+        kwargs = {
+            "model": self.model,
+            "max_completion_tokens": self.max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            # Kimi exposes thinking as an extension to Chat Completions. Low
+            # effort is the fast/non-thinking smoke-test mode; all other levels
+            # use its supported enabled setting.
+            "extra_body": {
+                "thinking": {
+                    "type": "disabled" if self.effort == "low" else "enabled",
+                }
+            },
+        }
+        if schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dwarfciv_response",
+                    "schema": schema,
+                },
+            }
+        msg = self._sdk.chat.completions.create(**kwargs)
+        text = msg.choices[0].message.content or ""
+        ci = getattr(msg.usage, "prompt_tokens", 0) or 0
+        co = getattr(msg.usage, "completion_tokens", 0) or 0
+        model = getattr(msg, "model", None) or self.model
+        return LLMResponse(text=text, model=model, input_tokens=ci,
+                           output_tokens=co, cost_usd=_cost(model, ci, co),
+                           stage=stage)
+
     def _mock(self, system: str, user: str, *, stage: str,
               schema: Optional[dict]) -> LLMResponse:
         """Deterministic offline stand-in. Returns structured output for the two
@@ -185,6 +264,29 @@ def _parse_json(text: str):
 
 def _mock_text(stage: str, system: str, user: str) -> str:
     """Canned, deterministic responses for the offline path."""
+    if stage == "govern":
+        return json.dumps({
+            "actions": [{"tool": "pass_turn", "params": {}}],
+            "strategy": {
+                "assessment": "Offline control has no operational assessment.",
+                "objectives": [],
+                "projects": [],
+                "contingencies": [],
+            },
+        })
+    if stage == "govern_diary":
+        return json.dumps({
+            "diary": ("I made no intervention this month. The execution "
+                      "receipt confirms that this was an intentional pass."),
+        })
+    if stage == "govern_probe":
+        try:
+            n = len(json.loads(user).get("questions", []))
+        except (json.JSONDecodeError, TypeError):
+            n = 0
+        return json.dumps({
+            "answers": ["Maintain the settlement and respond to new evidence."
+                        for _ in range(n)]})
     if stage == "interview":
         # The interview harness puts the condition name in the system prompt.
         low = system.lower()

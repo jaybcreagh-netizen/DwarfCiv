@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Store/check/remove DwarfCiv's Moonshot API key in the macOS login Keychain.
+set -euo pipefail
+
+service="DwarfCiv/MOONSHOT_API_KEY"
+account="dwarfciv"
+
+if [[ "$(uname -s)" != "Darwin" ]] || ! command -v security >/dev/null 2>&1; then
+    echo "This helper requires macOS Keychain. Export MOONSHOT_API_KEY instead." >&2
+    exit 1
+fi
+
+case "${1:-set}" in
+    set)
+        echo "Enter your Moonshot/Kimi API key at the secure Keychain prompt."
+        echo "The characters will not be displayed."
+        # With -w as the final option and no value, macOS prompts securely;
+        # the secret never appears in this script's arguments or shell history.
+        security add-generic-password \
+            -a "${account}" \
+            -s "${service}" \
+            -l "DwarfCiv Kimi API key" \
+            -U \
+            -w
+        echo "Kimi key saved in macOS Keychain."
+        echo "Test it with: ./setup/linux python3 -m agent.smoke_llm --provider kimi --effort low"
+        ;;
+    --check)
+        if security find-generic-password \
+                -a "${account}" -s "${service}" >/dev/null 2>&1; then
+            echo "Kimi key is configured in macOS Keychain."
+        else
+            echo "Kimi key is not configured. Run: ./setup/kimi-key" >&2
+            exit 1
+        fi
+        ;;
+    --delete)
+        if security delete-generic-password \
+                -a "${account}" -s "${service}" >/dev/null 2>&1; then
+            echo "Kimi key removed from macOS Keychain."
+        else
+            echo "No DwarfCiv Kimi key was stored."
+        fi
+        ;;
+    *)
+        echo "usage: $0 [set|--check|--delete]" >&2
+        exit 2
+        ;;
+esac
