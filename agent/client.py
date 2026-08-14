@@ -57,6 +57,10 @@ def default_model(provider: str) -> str:
         raise ValueError(f"unknown provider: {provider}") from e
 
 
+class EmptyCompletionError(ValueError):
+    """The provider returned a well-formed response with no content."""
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -65,9 +69,21 @@ class LLMResponse:
     output_tokens: int = 0
     cost_usd: float = 0.0
     stage: str = ""
+    finish_reason: str = ""
 
     def json(self) -> dict:
         """Parse the response text as JSON, tolerating ```json fences."""
+        if not self.text.strip():
+            # An empty body with a length finish_reason means the completion
+            # budget was spent before any content was emitted — with thinking
+            # enabled, reasoning tokens are billed against the same cap. Say
+            # so, because "Expecting value: line 1 column 1" reads like a
+            # malformed answer rather than an answer that never started.
+            raise EmptyCompletionError(
+                f"model returned no content (finish_reason="
+                f"{self.finish_reason or 'unknown'}, "
+                f"output_tokens={self.output_tokens}); if the budget was "
+                "exhausted, raise max_tokens or lower effort")
         return _parse_json(self.text)
 
 
@@ -86,6 +102,11 @@ class LLMClient:
     model: Optional[str] = None
     effort: str = "high"
     max_tokens: int = 4096
+    # Reasoning tokens are billed against the same completion budget as the
+    # answer, so a cap sized for the answer alone gets consumed by thinking
+    # and returns an empty body. A governed month at high effort spent all
+    # 4096 tokens reasoning and emitted nothing.
+    thinking_max_tokens: int = 32768
     _calls: list[dict] = field(default_factory=list, repr=False)
     _sdk: object = field(default=None, repr=False)
 
@@ -202,9 +223,11 @@ class LLMClient:
 
     def _kimi(self, system: str, user: str, *, stage: str,
               schema: Optional[dict]) -> LLMResponse:
+        thinking = self.effort != "low"
         kwargs = {
             "model": self.model,
-            "max_completion_tokens": self.max_tokens,
+            "max_completion_tokens": (self.thinking_max_tokens if thinking
+                                      else self.max_tokens),
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -213,9 +236,7 @@ class LLMClient:
             # effort is the fast/non-thinking smoke-test mode; all other levels
             # use its supported enabled setting.
             "extra_body": {
-                "thinking": {
-                    "type": "disabled" if self.effort == "low" else "enabled",
-                }
+                "thinking": {"type": "enabled" if thinking else "disabled"}
             },
         }
         if schema is not None:
@@ -227,13 +248,16 @@ class LLMClient:
                 },
             }
         msg = self._sdk.chat.completions.create(**kwargs)
-        text = msg.choices[0].message.content or ""
+        choice = msg.choices[0]
+        text = choice.message.content or ""
         ci = getattr(msg.usage, "prompt_tokens", 0) or 0
         co = getattr(msg.usage, "completion_tokens", 0) or 0
         model = getattr(msg, "model", None) or self.model
         return LLMResponse(text=text, model=model, input_tokens=ci,
                            output_tokens=co, cost_usd=_cost(model, ci, co),
-                           stage=stage)
+                           stage=stage,
+                           finish_reason=getattr(choice, "finish_reason", "")
+                           or "")
 
     def _mock(self, system: str, user: str, *, stage: str,
               schema: Optional[dict]) -> LLMResponse:

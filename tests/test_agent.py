@@ -12,7 +12,8 @@ from agent import probes
 from agent.schemas import (validate_call, InvalidActionCall, SCHEMAS_BY_NAME,
                            TOOL_SCHEMAS)
 from agent.governor import ScriptedGovernor, ActionCall, ActionPlan, Governor
-from agent.client import LLMClient, default_model
+from agent.client import (EmptyCompletionError, LLMClient, LLMResponse,
+                          default_model)
 from agent.llm_governor import LLMGovernor
 from agent.strategy import control_strategy
 
@@ -269,6 +270,32 @@ class KimiClientTests(unittest.TestCase):
         self.assertEqual(response.input_tokens, 12)
         self.assertEqual(response.output_tokens, 8)
         self.assertGreater(response.cost_usd, 0)
+
+    def test_thinking_effort_gets_a_budget_reasoning_cannot_exhaust(self):
+        fake_module = SimpleNamespace(OpenAI=self.FakeOpenAI)
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-key"},
+                        clear=True):
+            with patch.dict("sys.modules", {"openai": fake_module}):
+                client = LLMClient(provider="kimi", effort="high")
+                client.complete("system", "user", stage="govern",
+                                schema={"type": "object", "properties": {}})
+
+        call = self.FakeOpenAI.instance.chat.completions.kwargs
+        # Reasoning tokens are billed against this same cap. A governed month
+        # at high effort once spent all 4096 on thinking and returned an
+        # empty body, so the thinking budget must exceed the answer budget.
+        self.assertEqual(call["extra_body"]["thinking"]["type"], "enabled")
+        self.assertGreater(call["max_completion_tokens"], 4096)
+
+    def test_empty_completion_names_the_budget_not_a_parse_error(self):
+        response = LLMResponse(text="", model="kimi-k2.6", output_tokens=4096,
+                               finish_reason="length", stage="govern")
+        with self.assertRaises(EmptyCompletionError) as caught:
+            response.json()
+        message = str(caught.exception)
+        self.assertIn("no content", message)
+        self.assertIn("length", message)
+        self.assertIn("4096", message)
 
 
 if __name__ == "__main__":

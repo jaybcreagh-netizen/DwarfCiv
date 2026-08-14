@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .client import LLMClient
+from .client import EmptyCompletionError, LLMClient
 from .governor import ActionCall, ActionPlan, Governor
 from .schemas import TOOL_SCHEMAS
 from .strategy import STRATEGY_SCHEMA
@@ -253,6 +253,11 @@ class LLMGovernor(Governor):
                 if not isinstance(data, dict):
                     raise GovernorResponseError("top-level response is not an object")
                 return validator(data) if validator else data
+            except EmptyCompletionError as exc:
+                # Nothing came back to correct, so feeding the model a
+                # "your response was invalid" note would just spend the same
+                # exhausted budget again. Fail loudly instead.
+                raise GovernorResponseError(str(exc)) from exc
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 last_error = exc
                 prompt = (user + "\n\nYour previous response was invalid: "
