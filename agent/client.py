@@ -114,7 +114,7 @@ class LLMClient:
 
     provider: str = "anthropic"
     model: Optional[str] = None
-    effort: str = "high"
+    effort: str = "medium"
     max_tokens: int = 4096
     _calls: list[dict] = field(default_factory=list, repr=False)
     _sdk: object = field(default=None, repr=False)

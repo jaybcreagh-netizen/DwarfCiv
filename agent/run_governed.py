@@ -216,7 +216,7 @@ class GovernedRun:
 
 def load_governor(spec: str | None, *, provider: str = "anthropic",
                   model: str | None = None,
-                  effort: str = "high") -> Governor:
+                  effort: str = "medium") -> Governor:
     """Build the first-class LLM/pass governor or resolve a custom factory.
 
     The factory may be a Governor subclass or a zero-arg callable returning
@@ -249,7 +249,7 @@ def main() -> None:
                     choices=["anthropic", "kimi", "mock"])
     ap.add_argument("--model", default=None,
                     help="provider model id (default: provider's recommended model)")
-    ap.add_argument("--effort", default="high",
+    ap.add_argument("--effort", default="medium",
                     choices=["low", "medium", "high", "max"])
     ap.add_argument("--scenario", default="scarcity", choices=SCENARIOS,
                     help="starting pressure profile (default: scarcity; use "
