@@ -429,5 +429,44 @@ class ScarcityScenario(unittest.TestCase):
         self.assertEqual(welfare.calls, [])
 
 
+class InstallLockTests(unittest.TestCase):
+    """One DF install may not be shared by two live sessions.
+
+    Every runner mounts the same `df/` directory and `restore_save` wipes
+    `df/save` outright, so a probe booted beside a live governed run
+    deletes the save that run is holding. The port guard cannot see this:
+    separate containers have separate ports but share the mount.
+    """
+
+    def _client(self, df_dir):
+        from harness.dfhack_client import DFHackClient
+        (df_dir / "dfhack-run").touch()
+        return DFHackClient(df_dir)
+
+    def test_second_session_is_refused_while_the_first_holds_the_install(self):
+        with tempfile.TemporaryDirectory() as d:
+            df_dir = Path(d)
+            first = self._client(df_dir)
+            first._claim_install()
+
+            second = self._client(df_dir)
+            with self.assertRaises(DFError) as caught:
+                second._claim_install()
+            self.assertIn("already in use", str(caught.exception))
+
+    def test_releasing_lets_the_next_session_claim_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            df_dir = Path(d)
+            first = self._client(df_dir)
+            first._claim_install()
+            first._release_install()
+
+            self._client(df_dir)._claim_install()  # must not raise
+
+    def test_releasing_an_unheld_install_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._client(Path(d))._release_install()
+
+
 if __name__ == "__main__":
     unittest.main()

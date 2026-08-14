@@ -30,6 +30,20 @@ from typing import Optional
 
 
 # Pricing per 1M tokens (input, output), USD. Mirrors the model catalogue.
+# Reasoning tokens are billed against the same completion budget as the
+# answer, so a cap sized for the answer alone is consumed by thinking and
+# the model returns an empty body — a governed month at high effort spent
+# all 4096 tokens reasoning and emitted nothing. These budgets also set the
+# real cost and latency of a run: a governed month costs roughly $0.035 at
+# low effort and $0.07 at high, and takes ~40s against ~5min of model time,
+# which decides what horizon is affordable.
+_THINKING_BUDGET = {
+    "medium": 16384,
+    "high": 32768,
+    "max": 65536,
+}
+
+
 _PRICING = {
     "claude-fable-5": (10.0, 50.0),
     "claude-opus-4-8": (5.0, 25.0),
@@ -102,11 +116,6 @@ class LLMClient:
     model: Optional[str] = None
     effort: str = "high"
     max_tokens: int = 4096
-    # Reasoning tokens are billed against the same completion budget as the
-    # answer, so a cap sized for the answer alone gets consumed by thinking
-    # and returns an empty body. A governed month at high effort spent all
-    # 4096 tokens reasoning and emitted nothing.
-    thinking_max_tokens: int = 32768
     _calls: list[dict] = field(default_factory=list, repr=False)
     _sdk: object = field(default=None, repr=False)
 
@@ -226,8 +235,8 @@ class LLMClient:
         thinking = self.effort != "low"
         kwargs = {
             "model": self.model,
-            "max_completion_tokens": (self.thinking_max_tokens if thinking
-                                      else self.max_tokens),
+            "max_completion_tokens": _THINKING_BUDGET.get(
+                self.effort, 32768) if thinking else self.max_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

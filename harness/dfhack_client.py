@@ -49,9 +49,41 @@ class DFHackClient:
 
     # -- process lifecycle ----------------------------------------------------
 
+    @property
+    def _lock_path(self) -> Path:
+        return self.df_dir / ".dwarfciv-install-lock"
+
+    def _claim_install(self) -> None:
+        """Refuse to share one DF install with another live session.
+
+        The port guard below only sees the local machine, but every runner
+        (containers included) mounts the same `df/` directory, and
+        `restore_save` wipes `df/save` outright. A probe booted beside a
+        live governed run therefore deletes the save that run is holding.
+        The lock lives inside the shared install so both sides see it.
+        """
+        if self._lock_path.exists():
+            holder = (self._lock_path.read_text(encoding="utf-8").strip()
+                      or "another session")
+            raise DFError(
+                f"{self.df_dir} is already in use by {holder}. Only one DF "
+                "may hold an install at a time: restoring a save wipes "
+                "df/save underneath the other session. Wait for it to "
+                f"finish, or delete {self._lock_path} if it is stale.")
+        self._lock_path.write_text(
+            f"pid {os.getpid()} started {time.strftime('%Y-%m-%dT%H:%M:%S')}",
+            encoding="utf-8")
+
+    def _release_install(self) -> None:
+        try:
+            self._lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
     def start(self) -> None:
         if self.is_alive():
             return
+        self._claim_install()
         # A leftover DF from a previous run would hold the RPC port and
         # silently receive all our commands; fail fast instead.
         try:
@@ -125,6 +157,7 @@ class DFHackClient:
                     self.proc.kill()
                 self.proc.wait(timeout=15)
         self.proc = None
+        self._release_install()
         if self._log_file:
             self._log_file.close()
             self._log_file = None
