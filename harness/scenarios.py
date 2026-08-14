@@ -14,7 +14,7 @@ import json
 from .dfhack_client import DFHackClient
 
 
-SCENARIOS = ("baseline", "scarcity", "injury")
+SCENARIOS = ("baseline", "scarcity", "injury", "dreamfort")
 
 
 def _add_completed_workshop(client: DFHackClient, subtype: str,
@@ -83,6 +83,9 @@ def apply_scenario(client: DFHackClient, name: str) -> dict:
         return {"name": name, "mechanism": "unmodified restored embark"}
     if name == "injury":
         return apply_injury(client)
+    if name == "dreamfort":
+        from .dreamfort import apply_dreamfort
+        return apply_dreamfort(client)
     if name != "scarcity":
         raise ValueError(f"unknown scenario {name!r}; choose from {SCENARIOS}")
     return apply_scarcity(client)
