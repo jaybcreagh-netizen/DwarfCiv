@@ -1394,13 +1394,22 @@ end)
 
 -- ---- pending matters -----------------------------------------------------------
 section('mandates', function()
+    -- `df.mandate.T_mode` does not exist in this build, and indexing it
+    -- killed the whole section. That went unnoticed while the fort had no
+    -- nobility: the section only mattered from the month a queen declared
+    -- herself, which is exactly when it stopped reporting. Read each field
+    -- defensively so a renamed type costs one field, not the mandates.
+    local function enum_name(value, enum)
+        if enum and enum[value] ~= nil then return enum[value] end
+        return tostring(value)
+    end
     local mandates = {}
     for _, m in ipairs(df.global.world.mandates.all) do
         local unit = m.unit
         mandates[#mandates + 1] = {
             noble = unit and U(dfhack.units.getReadableName(unit)) or 'unknown',
-            mode = df.mandate.T_mode[m.mode],
-            item_type = df.item_type[m.item_type],
+            mode = enum_name(m.mode, df.mandate_mode),
+            item_type = enum_name(m.item_type, df.item_type),
             amount_total = m.amount_total,
             timeout_left = m.timeout_limit - m.timeout_counter,
         }
