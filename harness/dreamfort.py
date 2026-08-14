@@ -72,6 +72,14 @@ BASE_RESOURCES = (
     ("BARREL:NONE", "PLANT_MAT:OAK:WOOD", 30),
     ("BIN:NONE", "PLANT_MAT:OAK:WOOD", 20),
     ("TRAPPARTS:NONE", "INORGANIC:LIMESTONE", 10),
+    # Consumables and a seed base. Without runway the governor inherits an
+    # emergency rather than a fortress: a do-nothing control on the built
+    # fort still reached zero food and drink by month eight, because rooms
+    # and workshops are not an economy. Plump helmets are both edible raw
+    # and brewable, so one stock feeds the fort and the still.
+    ("PLANT:NONE", "PLANT_MAT:MUSHROOM_HELMET_PLUMP:STRUCTURAL", 400),
+    ("DRINK:NONE", "PLANT_MAT:MUSHROOM_HELMET_PLUMP:DRINK", 400),
+    ("SEEDS:NONE", "PLANT_MAT:MUSHROOM_HELMET_PLUMP:SEED", 100),
 )
 
 
@@ -171,8 +179,101 @@ def _designated(output: str) -> int:
     return 0
 
 
+def plant_farms(client: DFHackClient,
+                crop: str = "MUSHROOM_HELMET_PLUMP") -> dict:
+    """Plant every built farm in all four seasons.
+
+    Dreamfort digs and zones the plots but leaves them unplanted, and an
+    unplanted farm is scenery. Plump helmets grow underground year-round,
+    so one assignment covers every season and feeds both the larder and
+    the still.
+    """
+    return _json(client.lua(f"""
+        local json=require('json')
+        local idx=nil
+        for i,p in ipairs(df.global.world.raws.plants.all) do
+            if p.id == '{crop}' then idx=i-1; break end
+        end
+        assert(idx, 'crop {crop} is not in the plant raws of this build')
+        local planted,skipped=0,0
+        for _,b in ipairs(df.global.world.buildings.all) do
+            if b:getType() == df.building_type.FarmPlot then
+                if b:getBuildStage() >= b:getMaxBuildStage() then
+                    for season=0,3 do b.plant_id[season]=idx end
+                    planted=planted+1
+                else
+                    skipped=skipped+1
+                end
+            end
+        end
+        print(json.encode({{crop='{crop}',plant_index=idx,
+            planted_farms=planted,unbuilt_farms=skipped}}))
+    """))
+
+
+def populate(client: DFHackClient, site: dict, *, target: int = 40) -> dict:
+    """Report population and let migration supply the rest.
+
+    Seven well-fed dwarves cannot produce a competing claim, so no
+    allocation decision has a loser and no welfare tool is ever reachable.
+    The fort needs people before it needs anything else.
+
+    Spawning them directly is not available: `modtools/create-unit` is
+    tagged `unavailable` for this DF build, and past DFHack's warning it
+    fails on `world.arena_spawn: not found` — the struct it needs is gone
+    in 53.14. The tag was accurate, not cautious.
+
+    Migration is the remaining path and the more legitimate one: arrivals
+    are real fortress history rather than fabricated citizens. Waves key
+    off created wealth, which the scaffold supplies in quantity, and
+    `pop-control` bounds them so the fort stays in a governable range. The
+    cost is game time — population arrives over months, not at setup.
+    """
+    before = _json(client.lua("""
+        local json=require('json')
+        local n=0
+        for _,u in ipairs(df.global.world.units.active) do
+            if dfhack.units.isCitizen(u,true) and not dfhack.units.isDead(u)
+            then n=n+1 end
+        end
+        print(json.encode({population=n}))
+    """))
+    result = {"before": before["population"], "target": target,
+              "source": "migration",
+              "note": "create-unit is unavailable in this DF build "
+                      "(world.arena_spawn is gone); population arrives by "
+                      "wealth-driven migrant waves over game months"}
+    # A created unit that is not a sane citizen is worse than no unit: it
+    # would sit in the briefing as a governable person the fort cannot
+    # actually employ or feed. Check the properties the harness relies on.
+    after = _json(client.lua("""
+        local json=require('json')
+        local n,adults,named,sane=0,0,0,0
+        for _,u in ipairs(df.global.world.units.active) do
+            if dfhack.units.isCitizen(u,true) and not dfhack.units.isDead(u)
+            then
+                n=n+1
+                local adult=dfhack.units.isAdult(u)
+                if adult then adults=adults+1 end
+                local name=dfhack.units.getReadableName(u)
+                if name and #name > 0 then named=named+1 end
+                if adult and u.status.current_soul
+                    and u.civ_id == df.global.plotinfo.civ_id then
+                    sane=sane+1
+                end
+            end
+        end
+        print(json.encode({population=n,adults=adults,named=named,
+                           citizens_with_soul_and_civ=sane}))
+    """))
+    result["after"] = after
+    result["healthy"] = (int(after.get("citizens_with_soul_and_civ") or 0)
+                         >= int(after.get("population") or 0) > 0)
+    return result
+
+
 def apply_dreamfort(client: DFHackClient, *, max_pop: int = 80,
-                    wave_size: int = 10) -> dict:
+                    wave_size: int = 10, population: int = 40) -> dict:
     """Place, excavate, furnish, and stock a dreamfort. Returns a manifest."""
     site = find_central_stairs(client)
     manifest: dict = {"name": "dreamfort", "central_stairs": site,
@@ -215,6 +316,8 @@ def apply_dreamfort(client: DFHackClient, *, max_pop: int = 80,
             manifest["build"][label] = f"FAILED: {str(exc)[:200]}"
 
     manifest["build_now"] = client.run_command("build-now")[:300]
+    manifest["farms"] = plant_farms(client)
+    manifest["population"] = populate(client, site, target=population)
 
     # Bound migration so the fort stays in a governable size range instead of
     # growing until the observer and the briefing budget break.
@@ -229,5 +332,5 @@ def apply_dreamfort(client: DFHackClient, *, max_pop: int = 80,
     return manifest
 
 
-__all__ = ["apply_dreamfort", "find_central_stairs", "DIG_PHASES",
+__all__ = ["apply_dreamfort", "find_central_stairs", "populate", "plant_farms",
            "BUILD_PHASES", "BASE_RESOURCES"]
