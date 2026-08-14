@@ -41,11 +41,24 @@ SEEDS = {
 }
 PRESET_TITLE = "POCKET REGION"
 # Embark site in mid-level coordinates (region_tile*16 + local_tile, on a
-# 17x17 world = 0..271). (81,115) = region (5,7), local (1,3); the default
-# 4x4 rectangle lands on (81,115)-(84,118): a forested, river-less valley
-# with murky pools ("Water might need to be pumped out" is the only embark
-# warning). Found empirically; deterministic for the pinned world.
-EMBARK_MID_COORDS = (81, 115)
+# 17x17 world = 0..271). (88,120) = region (5,7), local (8,8): the centre of
+# the forested valley every validated run has used, so its trees and geology
+# are known-good.
+#
+# This replaces a cornered rectangle at local (1,3). Centring roughly
+# quadrupled the visible water (109 -> 463 tiles) without changing biome.
+#
+# It did NOT solve fresh water: every visible tile here is stagnant, and none
+# has a citizen-reachable adjacent tile, so wells, clean water for the
+# hospital, and a well-fed food chain all remain blocked. Two things are worth
+# knowing before the next attempt. Reading river paths out of
+# world_data.rivers does not predict embark-scale water: region (5,7) and all
+# four neighbours appear river-bearing there, yet no river crosses either
+# rectangle. And not every region tile is embarkable -- region (12,10),
+# mid (200,168), never opened DF's Confirm panel. A reliable search should
+# read the site-selection screen's own rendered description, which names
+# "River" and "Brook" directly, rather than inferring from world structs.
+EMBARK_MID_COORDS = (88, 120)
 
 
 def get_screen_class(client: DFHackClient) -> str:
