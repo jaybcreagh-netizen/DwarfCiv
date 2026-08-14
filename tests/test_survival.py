@@ -1107,7 +1107,7 @@ class BootstrapGovernorTests(unittest.TestCase):
         gov = BootstrapGovernor()
         mature = self._mature()
         self.assertEqual(gov.completed_stages(mature),
-                         [name for name, _, _ in STAGES])
+                         [name for name, *_ in STAGES])
         plan = gov.act({}, "", mature, {})
         self.assertEqual([a.tool for a in plan.actions], ["pass_turn"])
         self.assertIn("Bootstrap complete", plan.strategy["assessment"])
@@ -1179,10 +1179,31 @@ class BootstrapGovernorTests(unittest.TestCase):
     def test_zero_drink_preempts_the_build_order(self):
         gov = BootstrapGovernor()
         b = self._briefing(stocks={"drink": 0, "food_total": 50,
+                                   "available_brewable_plants": 12,
                                    "empty_barrels": 0})
         plan = gov.act({}, "", b, {})
         self.assertIn("preempted", plan.strategy["assessment"])
         self.assertIn("'brewing'", plan.strategy["assessment"])
+
+    def test_a_shortage_stage_without_its_input_does_not_preempt(self):
+        """Preempting to a consumer starves the fort it means to save.
+
+        At zero drink with no brewable plants left, jumping back to brewing
+        every month blocked the farming stage that would have grown more --
+        with sixty-nine seeds in store and not one farm built.
+        """
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 0, "food_total": 50,
+                                   "available_brewable_plants": 0,
+                                   "available_wood": 9, "empty_barrels": 0})
+        b["operations"]["workshops"] = [
+            {"id": 1, "subtype": "Carpenters", "complete": True},
+            {"id": 2, "subtype": "Still", "complete": True},
+            {"id": 3, "subtype": "Fishery", "complete": True},
+        ]
+        plan = gov.act({}, "", b, {})
+        self.assertNotIn("preempted", plan.strategy["assessment"])
+        self.assertIn("'farming'", plan.strategy["assessment"])
 
     def test_zero_food_preempts_even_with_drink_in_hand(self):
         gov = BootstrapGovernor()
@@ -1190,6 +1211,46 @@ class BootstrapGovernorTests(unittest.TestCase):
                                    "empty_barrels": 0})
         plan = gov.act({}, "", b, {})
         self.assertIn("'fishing'", plan.strategy["assessment"])
+
+    def test_provisioning_fells_trees_before_a_workshop_it_cannot_afford(self):
+        """stocks.wood counts logs already built into things.
+
+        Only available_wood can be spent, and a bootstrap that ignored the
+        difference tried build_workshop every month against zero available
+        logs and failed every month.
+        """
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 20, "food_total": 20,
+                                   "wood": 3, "available_wood": 0,
+                                   "empty_barrels": 0})
+        b["operations"]["workshops"] = [{"id": 1, "subtype": "Carpenters",
+                                         "complete": True}]
+        plan = gov.act({}, "", b, {})
+        self.assertEqual(plan.actions[0].tool, "chop_trees")
+
+    def test_provisioning_builds_once_logs_are_available(self):
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 20, "food_total": 20,
+                                   "wood": 9, "available_wood": 6,
+                                   "empty_barrels": 0})
+        b["operations"]["workshops"] = [{"id": 1, "subtype": "Carpenters",
+                                         "complete": True}]
+        plan = gov.act({}, "", b, {})
+        self.assertEqual(plan.actions[0].tool, "build_workshop")
+        self.assertEqual(plan.actions[0].params["workshop"], "Still")
+
+    def test_an_unfinished_workshop_is_prioritized_not_rebuilt(self):
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 20, "food_total": 20,
+                                   "available_wood": 6, "empty_barrels": 0})
+        b["operations"]["workshops"] = [
+            {"id": 1, "subtype": "Carpenters", "complete": True},
+            {"id": 2, "subtype": "Still", "complete": False},
+        ]
+        plan = gov.act({}, "", b, {})
+        self.assertEqual(plan.actions[0].tool,
+                         "prioritize_workshop_construction")
+        self.assertEqual(plan.actions[0].params["workshop_id"], 2)
 
     def test_hospital_needs_furniture_and_a_living_doctor(self):
         gov = BootstrapGovernor()

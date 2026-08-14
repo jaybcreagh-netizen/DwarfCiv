@@ -120,19 +120,35 @@ def _hospital_ready(b: dict) -> bool:
 # (stage name, controller factory, completion predicate). Dependency order:
 # containers and a still before brewing, food before infrastructure, wealth
 # before the hospital because wealth is what makes the fort worth governing.
+# (stage, controller, completion predicate, workshop the stage needs).
+#
+# The workshop column exists because the acceptance controllers are
+# validators, not builders: each was written against a fixture that had
+# already placed its workshop, and BrewingRecoveryGovernor says so in its
+# own source -- "a missing one is a failed fixture, not permission to fake
+# success" -- so it passes the turn forever on a bare embark. The sequencer
+# therefore provisions the workshop itself before delegating.
 STAGES = (
-    ("containers", ContainerRecoveryGovernor, _containers_ready),
-    ("brewing", BrewingRecoveryGovernor, _brewing_ready),
-    ("fishing", FishRecoveryGovernor, _fishing_ready),
-    ("farming", FarmRecoveryGovernor, _farm_ready),
-    ("logistics", LogisticsRecoveryGovernor, _stockpiles_ready),
-    ("wealth", TradeRecoveryGovernor, _wealth_ready),
-    ("hospital", HospitalRecoveryGovernor, _hospital_ready),
+    # ContainerRecoveryGovernor fells its own trees and raises its own
+    # carpenter shop, so it is left alone; provisioning it directly would
+    # preempt the step that produces the logs everything else needs.
+    ("containers", ContainerRecoveryGovernor, _containers_ready, None),
+    ("brewing", BrewingRecoveryGovernor, _brewing_ready, "Still"),
+    ("fishing", FishRecoveryGovernor, _fishing_ready, "Fishery"),
+    ("farming", FarmRecoveryGovernor, _farm_ready, None),
+    ("logistics", LogisticsRecoveryGovernor, _stockpiles_ready, None),
+    ("wealth", TradeRecoveryGovernor, _wealth_ready, "Craftsdwarfs"),
+    ("hospital", HospitalRecoveryGovernor, _hospital_ready, None),
 )
 
 
-# Which controller answers which shortage when the fortress is starving.
-_CRISIS = (("drink", "brewing"), ("food_total", "fishing"))
+# Which controller answers which shortage, and the input it needs to answer
+# it. A shortage stage without its input cannot help: brewing with no
+# brewable plants merely blocks the farming stage that would grow them.
+_CRISIS = (
+    ("drink", "brewing", "available_brewable_plants"),
+    ("food_total", "fishing", None),
+)
 
 
 class BootstrapGovernor(Governor):
@@ -140,34 +156,72 @@ class BootstrapGovernor(Governor):
     model_id = "control:bootstrap-v1"
 
     def __init__(self, stages=STAGES):
-        self._stages = [(n, factory(), done) for n, factory, done in stages]
+        self._stages = [(n, factory(), done, shop)
+                        for n, factory, done, shop in stages]
 
     def completed_stages(self, briefing_json: dict) -> list[str]:
-        return [name for name, _, done in self._stages
+        return [name for name, _, done, _ in self._stages
                 if _safe(done, briefing_json)]
+
+    @staticmethod
+    def _provision(briefing_json: dict, subtype: str) -> list[ActionCall]:
+        """Place or finish the workshop a stage needs, or nothing if present.
+
+        Every workshop costs one log, and `stocks.wood` counts logs already
+        built into things. Only `available_wood` can actually be spent, so
+        felling comes first when it is zero -- otherwise `build_workshop`
+        fails on "no available log" every month forever.
+        """
+        shops = [w for w in _ops(briefing_json).get("workshops") or []
+                 if w.get("subtype") == subtype]
+        if any(w.get("complete") for w in shops):
+            return []
+        if shops:
+            return [ActionCall("prioritize_workshop_construction",
+                               {"workshop_id": shops[0]["id"]})]
+        if int(_stocks(briefing_json).get("available_wood") or 0) < 1:
+            return [ActionCall("chop_trees", {"qty": 5})]
+        return [ActionCall("build_workshop", {"workshop": subtype})]
 
     def _crisis_stage(self, briefing_json: dict) -> str | None:
         """Which stage, if any, must preempt the normal order right now.
 
         A fortress at zero food or drink cannot be bootstrapped; it dies
-        while the sequencer works through its list. An earlier version
-        gated stages on stock levels instead, which let both consumable
-        stages pass at month zero on the embark's starting supplies — so
-        no still and no fishery were ever built, the fort coasted until
-        the supplies ran out, and it starved at month nine.
+        while the sequencer works through its list.
+
+        A shortage stage only preempts when it holds the input to fix the
+        shortage. Without that check the guard makes things worse: at zero
+        drink it jumped back to brewing every month, brewing had no
+        brewable plants left, and it blocked the farming stage that would
+        have grown more — with sixty-nine seeds in store and no farm built.
+        Preempting to a stage that consumes a resource, rather than the one
+        that produces it, starved the fort it was meant to save.
         """
         stocks = _stocks(briefing_json)
-        for key, stage in _CRISIS:
-            if int(stocks.get(key) or 0) <= 0:
-                return stage
+        for key, stage, needs in _CRISIS:
+            if int(stocks.get(key) or 0) > 0:
+                continue
+            if needs and int(stocks.get(needs) or 0) <= 0:
+                continue
+            return stage
         return None
 
     def act(self, charter, briefing_md, briefing_json, context) -> ActionPlan:
         crisis = self._crisis_stage(briefing_json)
         if crisis:
-            for name, controller, _ in self._stages:
+            for name, controller, _, shop in self._stages:
                 if name != crisis:
                     continue
+                provision = self._provision(briefing_json, shop) if shop else []
+                if provision:
+                    return ActionPlan(
+                        actions=provision,
+                        strategy=control_strategy(
+                            f"Bootstrap preempted: stage {crisis!r} is "
+                            "answering a shortage at zero and still needs "
+                            f"its {shop}."),
+                        diary=(f"Bootstrap: building the {shop} the fortress "
+                               "needs to stop starving."))
                 plan = controller.act(charter, briefing_md, briefing_json,
                                       context)
                 plan.strategy = control_strategy(
@@ -179,10 +233,20 @@ class BootstrapGovernor(Governor):
                 return plan
 
         done: list[str] = []
-        for name, controller, is_done in self._stages:
+        for name, controller, is_done, shop in self._stages:
             if _safe(is_done, briefing_json):
                 done.append(name)
                 continue
+            provision = self._provision(briefing_json, shop) if shop else []
+            if provision:
+                return ActionPlan(
+                    actions=provision,
+                    strategy=control_strategy(
+                        f"Bootstrap stage {name!r} needs a {shop} before its "
+                        "controller can act. Completed: "
+                        + (", ".join(done) or "none") + "."),
+                    diary=(f"Bootstrap: providing the {shop} that stage "
+                           f"{name} depends on."))
             plan = controller.act(charter, briefing_md, briefing_json, context)
             plan.strategy = control_strategy(
                 f"Bootstrap stage {name!r} is active. Completed: "
