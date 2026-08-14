@@ -10,6 +10,7 @@ from agent.container_recovery_governor import ContainerRecoveryGovernor
 from agent.trade_recovery_governor import TradeRecoveryGovernor
 from agent.hospital_recovery_governor import HospitalRecoveryGovernor
 from agent.treatment_recovery_governor import TreatmentRecoveryGovernor
+from agent.bootstrap_governor import BootstrapGovernor, STAGES
 from harness.scenarios import SCENARIOS, apply_injury
 from agent.strategy import StrategyRecord, control_strategy
 from harness.actions import (assign_broker, assign_hospital_doctor,
@@ -1046,6 +1047,156 @@ class InjuryFixtureTests(unittest.TestCase):
             apply_injury(None, drop_height=0)
         with self.assertRaises(ValueError):
             apply_injury(None, drop_height=4)
+
+
+class BootstrapGovernorTests(unittest.TestCase):
+    """The bootstrap must advance on observed state, not on its own say-so."""
+
+    @staticmethod
+    def _briefing(**over):
+        b = {
+            "population": 7,
+            # Nonzero by default so the ordinary stage ordering is exercised;
+            # a fort at zero takes the crisis path instead.
+            "stocks": {"drink": 20, "food_total": 20, "empty_barrels": 0},
+            "operations": {"workshops": [], "farms": [], "manager_orders": []},
+            "logistics": {"stockpiles": [], "workshops": []},
+            "trade": {"depots": []},
+            "healthcare": {"locations": [], "furnishings": {},
+                           "doctor_candidates": []},
+            "agriculture": {"available_seed_types": []},
+            "water": {},
+            "dwarves": [{"id": 1, "adult": True, "profession": "Miner"}],
+        }
+        b.update(over)
+        return b
+
+    def _mature(self):
+        return self._briefing(
+            population=7,
+            stocks={"drink": 60, "food_total": 60, "empty_barrels": 4},
+            operations={
+                "workshops": [
+                    {"id": 1, "subtype": "Carpenters", "complete": True},
+                    {"id": 2, "subtype": "Still", "complete": True},
+                    {"id": 3, "subtype": "Fishery", "complete": True},
+                ],
+                "farms": [{"id": 4, "complete": True,
+                           "crops": {"spring": "PLUMP_HELMET"}}],
+                "manager_orders": [],
+            },
+            logistics={"stockpiles": [{"id": 3, "reachable": True},
+                                      {"id": 4, "reachable": True}],
+                       "workshops": []},
+            trade={"depots": [{"id": 1, "complete": True,
+                               "goods_at_depot": {"item_records": 5}}]},
+            healthcare={
+                "locations": [{"id": 0, "occupations": [
+                    {"type": "DOCTOR", "unit_alive": True}]}],
+                "furnishings": {"beds": 1, "tables": 1, "containers": 1},
+                "doctor_candidates": []},
+        )
+
+    def test_empty_fort_starts_at_the_first_stage(self):
+        gov = BootstrapGovernor()
+        self.assertEqual(gov.completed_stages(self._briefing()), [])
+        plan = gov.act({}, "", self._briefing(), {})
+        self.assertIn("stage 'containers'", plan.strategy["assessment"])
+
+    def test_a_mature_fort_reports_every_stage_complete_and_passes(self):
+        gov = BootstrapGovernor()
+        mature = self._mature()
+        self.assertEqual(gov.completed_stages(mature),
+                         [name for name, _, _ in STAGES])
+        plan = gov.act({}, "", mature, {})
+        self.assertEqual([a.tool for a in plan.actions], ["pass_turn"])
+        self.assertIn("Bootstrap complete", plan.strategy["assessment"])
+
+    def test_wealth_requires_fortress_goods_not_merchant_cargo(self):
+        gov = BootstrapGovernor()
+        b = self._mature()
+        # Merchant cargo sitting at the depot is not wealth this fort made.
+        b["trade"]["depots"] = [{"id": 1, "complete": True,
+                                 "goods_at_depot": {"item_records": 0},
+                                 "merchant_goods_at_depot": {
+                                     "item_records": 210}}]
+        self.assertNotIn("wealth", gov.completed_stages(b))
+
+    def test_an_unbuilt_depot_does_not_count_as_wealth(self):
+        gov = BootstrapGovernor()
+        b = self._mature()
+        b["trade"]["depots"] = [{"id": 1, "complete": False,
+                                 "goods_at_depot": {"item_records": 5}}]
+        self.assertNotIn("wealth", gov.completed_stages(b))
+
+    def test_a_farm_without_a_planted_season_is_not_done(self):
+        gov = BootstrapGovernor()
+        b = self._mature()
+        b["operations"]["farms"] = [{"id": 4, "complete": True, "crops": {}}]
+        self.assertNotIn("farming", gov.completed_stages(b))
+
+    def test_a_missing_observation_section_means_not_done_not_a_crash(self):
+        gov = BootstrapGovernor()
+        b = self._mature()
+        del b["trade"]
+        del b["healthcare"]
+        stages = gov.completed_stages(b)
+        self.assertNotIn("wealth", stages)
+        self.assertNotIn("hospital", stages)
+        self.assertIn("brewing", stages)
+
+    def test_stage_completion_survives_falling_stocks(self):
+        """Completion must be monotonic, or the bootstrap traps itself.
+
+        Gating on stock levels let both consumable stages pass at month
+        zero on the embark's supplies, so no still and no fishery were
+        ever built; then migrants raised the threshold, brewing
+        un-completed, and the sequencer sat in a stage whose inputs were
+        exhausted while the fortress starved.
+        """
+        gov = BootstrapGovernor()
+        rich = self._mature()
+        rich["operations"]["workshops"] = [
+            {"id": 1, "subtype": "Carpenters", "complete": True},
+            {"id": 2, "subtype": "Still", "complete": True},
+            {"id": 3, "subtype": "Fishery", "complete": True},
+        ]
+        before = gov.completed_stages(rich)
+
+        starving = json.loads(json.dumps(rich))
+        starving["population"] = 40
+        starving["stocks"].update({"drink": 1, "food_total": 1})
+        self.assertEqual(gov.completed_stages(starving), before)
+
+    def test_a_stocked_embark_still_has_to_build_its_production(self):
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 60, "food_total": 60,
+                                   "empty_barrels": 4})
+        stages = gov.completed_stages(b)
+        self.assertNotIn("brewing", stages)
+        self.assertNotIn("fishing", stages)
+
+    def test_zero_drink_preempts_the_build_order(self):
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 0, "food_total": 50,
+                                   "empty_barrels": 0})
+        plan = gov.act({}, "", b, {})
+        self.assertIn("preempted", plan.strategy["assessment"])
+        self.assertIn("'brewing'", plan.strategy["assessment"])
+
+    def test_zero_food_preempts_even_with_drink_in_hand(self):
+        gov = BootstrapGovernor()
+        b = self._briefing(stocks={"drink": 50, "food_total": 0,
+                                   "empty_barrels": 0})
+        plan = gov.act({}, "", b, {})
+        self.assertIn("'fishing'", plan.strategy["assessment"])
+
+    def test_hospital_needs_furniture_and_a_living_doctor(self):
+        gov = BootstrapGovernor()
+        b = self._mature()
+        b["healthcare"]["locations"] = [{"id": 0, "occupations": [
+            {"type": "DOCTOR", "unit_alive": False}]}]
+        self.assertNotIn("hospital", gov.completed_stages(b))
 
 
 if __name__ == "__main__":
