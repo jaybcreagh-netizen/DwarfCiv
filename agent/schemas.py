@@ -167,9 +167,92 @@ TOOL_SCHEMAS: list[dict] = [
             "type": "object",
             "properties": {
                 "workshop": {"type": "string", "enum": [
-                    "Carpenters", "Still", "Fishery", "Craftsdwarfs"]},
+                    "Carpenters", "Still", "Fishery", "Craftsdwarfs",
+                    "Masons", "Mechanics"]},
             },
             "required": ["workshop"],
+        },
+    },
+    {
+        "name": "make_well_components",
+        "description": (
+            "Queue one bounded manager order for a well component: a block "
+            "at a completed mason's workshop, a mechanism at a completed "
+            "mechanic's workshop, or a wooden bucket at a completed "
+            "carpenter's workshop. Requires the workshop and raw input to "
+            "be observed first; completion evidence is a new physical "
+            "output item id, never the order itself."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string",
+                         "enum": ["block", "mechanism", "bucket"]},
+                "qty": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "prepare_well_site",
+        "description": (
+            "Designate one exact visible floor tile beside observed fresh "
+            "water for channeling, so the opened shaft refills and a well "
+            "can later be built over it. Coordinates must come from the "
+            "water observation's fresh-access sample; hidden tiles are "
+            "refused. Mining labor is a separate dependency."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "minimum": 0},
+                "y": {"type": "integer", "minimum": 0},
+                "z": {"type": "integer", "minimum": 0},
+            },
+            "required": ["x", "y", "z"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "build_well",
+        "description": (
+            "Construct one native well at an exact visible tile with "
+            "verified fresh water within three z-levels directly below, "
+            "consuming one exact available block, mechanism, bucket, and "
+            "chain. Returns the well, component item, and construction job "
+            "ids; a designated well is not yet a working water source."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "minimum": 0},
+                "y": {"type": "integer", "minimum": 0},
+                "z": {"type": "integer", "minimum": 0},
+            },
+            "required": ["x", "y", "z"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "designate_water_source",
+        "description": (
+            "Create one bounded native water-source zone whose footprint "
+            "contains visible fresh water, so water hauling and patient "
+            "care draw from a verified source. Where only stagnant water "
+            "is visible, allow_stagnant must be set deliberately: stagnant "
+            "water carries infection risk when used to clean wounds, and "
+            "the receipt records that the risk was accepted. Returns the "
+            "exact zone id and the water quality actually zoned."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "minimum": 0},
+                "y": {"type": "integer", "minimum": 0},
+                "z": {"type": "integer", "minimum": 0},
+                "width": {"type": "integer", "minimum": 1, "maximum": 5},
+                "height": {"type": "integer", "minimum": 1, "maximum": 5},
+                "allow_stagnant": {"type": "boolean"},
+            },
+            "required": ["x", "y", "z"],
+            "additionalProperties": False,
         },
     },
     {

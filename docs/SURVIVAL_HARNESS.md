@@ -294,6 +294,61 @@ yet prove recovery, diagnosis, surgery, dressing, or patient outcome. Triage
 and medical-priority policies remain unavailable until a bounded patient
 micro-scenario produces and completes exact native medical jobs.
 
+## Live clean-water acceptance
+
+The water tranche is deliberately split into a component chain, which is
+live-verified, and a siting chain, which this embark cannot satisfy.
+
+The first observer was wrong in a way worth recording. `tile_designation`
+exposes `liquid_type` as a **boolean** in the pinned DFHack build (`false` =
+water, `true` = magma), not the `tile_liquid` enum. Comparing against
+`df.tile_liquid.Water` therefore matched nothing and
+`runs/harness-v23-water-observer-20260814/` reported a completely dry map.
+An independent probe found 101,394 liquid tiles. The corrected observer in
+`runs/harness-v23b-water-observer-fixed-20260814/` reports the same numbers
+as the probe: 109 visible water tiles, all stagnant, with 101,285 hidden
+water tiles that the observer deliberately does not reveal. A silent zero
+that looks like a fact about the map is exactly the failure the evidence
+rules exist to catch, so all water checks now accept either representation.
+
+- `runs/harness-v24-water-components-20260814/` and
+  `runs/harness-v24b-water-components-20260814/` are negative evidence.
+  A mason's workshop completed and four `ConstructBlocks` orders were
+  created, but every one sat at `validated=false` with `mat_type=-1` and no
+  workshop job ever appeared. Mason labor was enabled on eleven citizens
+  and three reachable boulders existed, so neither labor nor material
+  availability explained it. An unbound stone order is the same silent
+  failure the underspecified `MakeBarrel` once produced. These runs also
+  exposed a controller fault: it re-queued the order every month instead of
+  asking why the outstanding one had produced nothing.
+- `runs/harness-v25-water-material-bound-20260814/` is the corrected path.
+  Stone orders now carry the exact material token of an observed available
+  boulder (`INORGANIC:LIGNITE`). Block items 3029, 3030, 3031, and 3032
+  appear one month after the order, and mechanism item 3162 appears after
+  the mechanic's workshop completes. The controller then holds instead of
+  re-queuing while an order is pending.
+- `runs/harness-v26-water-stagnant-fallback-20260814/` establishes the
+  boundary. With every component in hand, no well can be sited: the map
+  offers no visible fresh water, and none of the 109 stagnant tiles has an
+  adjacent walkable tile reachable from a citizen. The controller takes no
+  action and records the reason. Digging toward the hidden water would both
+  reveal geology the governor is not entitled to see and manufacture a
+  resource the map did not provide.
+
+So the component chain — mason and mechanic workshops, material-bound stone
+orders, and physical block and mechanism items — is live-verified, while
+`prepare_well_site`, `build_well`, and `designate_water_source` remain
+implemented and schema-backed but unexecuted. `establish_clean_water` stays
+`unverified` and reports `unavailable` to the governor.
+
+Because the handbook's own recovery text allows a stagnant fallback,
+`designate_water_source` takes an explicit `allow_stagnant` argument rather
+than silently substituting poor water. The receipt records water quality,
+whether the water is clean, and whether infection risk was accepted. Water
+depth also fluctuates across months — one observation recorded zero visible
+stagnant tiles where neighbouring months recorded 109 — so a single
+observation is not evidence of a permanent water supply.
+
 ## Next implementation sequence
 
 1. **Farm-room recovery:** if the first epistemically honest shallow room
@@ -311,11 +366,14 @@ micro-scenario produces and completes exact native medical jobs.
    and add a longer seasonal regression. The end-to-end first exchange—from
    depot construction through an itemized, ethics-aware ownership receipt—is
    implemented and live verified.
-6. **Health and defence:** add a bounded injured-patient treatment fixture and
-   clean-water chain; separately implement mechanisms, doors/bridges, a safe
-   civilian burrow/alert, equipment-aware squads, barracks, schedules, and
-   training. Only expose triage or lockdown choices after their causal receipts
-   exist.
+6. **Health and defence:** the `injury` scenario and
+   `agent.treatment_recovery_governor` are implemented but not yet run
+   live, so `validate_clinical_treatment` remains `missing_tool`. The
+   clean-water component chain is verified; well siting needs an embark
+   with reachable surface water. Defence is still unimplemented: doors and
+   bridges, a safe civilian burrow and alert, equipment-aware squads,
+   barracks, schedules, and training. Only expose triage or lockdown
+   choices after their causal receipts exist.
 7. **Evaluation:** micro-scenarios first, then 3-, 6-, and 12-month survival
    gates before another 24-month model reign.
 

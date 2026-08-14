@@ -880,14 +880,27 @@ section('healthcare', function()
     end
 
     local patients={}
+    -- Health-request flag names vary across struct revisions; read each one
+    -- defensively so a renamed field degrades to omission, not section loss.
+    local request_flags={'needs_recovery','rq_diagnosis','rq_cleaning',
+        'rq_surgery','rq_sutures','rq_dressing','rq_traction',
+        'rq_immobilize','rq_crutch'}
     for _,unit in ipairs(df.global.world.units.active) do
         if dfhack.units.isCitizen(unit,true) and not dfhack.units.isDead(unit)
             and unit.health and unit.health.flags.needs_healthcare then
             local job=unit.job.current_job
+            local requests={}
+            for _,name in ipairs(request_flags) do
+                local ok,v=pcall(function() return unit.health.flags[name] end)
+                if ok and v then requests[#requests+1]=name end
+            end
             patients[#patients+1]={id=unit.id,
                 name=U(dfhack.units.getReadableName(unit)),
                 current_job=job and U(dfhack.job.getName(job)) or nil,
-                job_type=job and df.job_type[job.job_type] or nil}
+                job_type=job and df.job_type[job.job_type] or nil,
+                wound_count=#unit.body.wounds,
+                health_requests=requests,
+                pos={x=unit.pos.x,y=unit.pos.y,z=unit.pos.z}}
         end
     end
 
@@ -1057,6 +1070,124 @@ section('healthcare', function()
         furnishings=furnishings,available_furniture=available_furniture,
         supplies=supplies,patients=patients,medical_jobs=medical_jobs,
         doctor_candidates=doctor_candidates}
+end)
+
+-- ---- water ------------------------------------------------------------------
+-- Clean water is a hospital and survival dependency. Report only visible
+-- (unhidden) water tiles: revealing hidden aquifers or caverns here would
+-- leak geology the governor is not entitled to know.
+section('water', function()
+    local reference=nil
+    for _,u in ipairs(df.global.world.units.active) do
+        if dfhack.units.isCitizen(u, true) and not dfhack.units.isDead(u)
+            and dfhack.units.isAdult(u) then reference=u; break end
+    end
+    local function reachable(pos)
+        return not reference or dfhack.maps.canWalkBetween(reference.pos,pos)
+    end
+
+    local wells={}
+    local source_zones={}
+    for _,b in ipairs(df.global.world.buildings.all) do
+        if b:getType() == df.building_type.Well then
+            wells[#wells+1]={id=b.id,x=b.centerx,y=b.centery,z=b.z,
+                complete=b:getBuildStage() >= b:getMaxBuildStage(),
+                reachable=reachable(xyz2pos(b.centerx,b.centery,b.z))}
+        elseif df.building_civzonest:is_instance(b)
+            and b.type == df.civzone_type.WaterSource then
+            source_zones[#source_zones+1]={id=b.id,
+                x=b.x1,y=b.y1,z=b.z,
+                width=b.x2-b.x1+1,height=b.y2-b.y1+1,
+                active=b.spec_sub_flag.active}
+        end
+    end
+    table.sort(wells,function(a,b) return a.id < b.id end)
+    table.sort(source_zones,function(a,b) return a.id < b.id end)
+
+    -- This DFHack build exposes tile_designation.liquid_type as a boolean
+    -- (false = water, true = magma), not the tile_liquid enum. Comparing
+    -- against df.tile_liquid.Water matched nothing and reported a dry map
+    -- on an embark that actually has water, so accept either form.
+    local function is_water(des)
+        local lt=des.liquid_type
+        if type(lt) == 'boolean' then return not lt end
+        return lt == df.tile_liquid.Water
+    end
+
+    -- Visible water tiles by quality. Salt and stagnant water are recorded
+    -- separately because wound cleaning with stagnant water risks infection.
+    local counts={fresh=0,salt=0,stagnant=0}
+    local fresh_access={}          -- bounded samples of water tiles with an
+    local stagnant_access={}       -- adjacent walkable, reachable floor tile
+    local MAX_SAMPLE=12
+    local function walkable(pos)
+        local tt=dfhack.maps.getTileType(pos)
+        if not tt then return false end
+        local shape=df.tiletype.attrs[tt].shape
+        local basic=df.tiletype_shape.attrs[shape].basic_shape
+        return basic == df.tiletype_shape_basic.Floor
+            or basic == df.tiletype_shape_basic.Ramp
+            or basic == df.tiletype_shape_basic.Stair
+    end
+    for _,block in ipairs(df.global.world.map.map_blocks) do
+        for y=0,15 do
+            for x=0,15 do
+                local des=block.designation[x][y]
+                if des.flow_size > 0 and not des.hidden and is_water(des) then
+                    local class='fresh'
+                    if des.water_salt then class='salt'
+                    elseif des.water_stagnant then class='stagnant' end
+                    counts[class]=counts[class]+1
+                    local sample=nil
+                    if class == 'fresh' and #fresh_access < MAX_SAMPLE then
+                        sample=fresh_access
+                    elseif class == 'stagnant'
+                        and #stagnant_access < MAX_SAMPLE then
+                        sample=stagnant_access
+                    end
+                    if sample then
+                        local wx=block.map_pos.x+x
+                        local wy=block.map_pos.y+y
+                        local wz=block.map_pos.z
+                        for _,d in ipairs({{0,-1},{0,1},{-1,0},{1,0}}) do
+                            local npos=xyz2pos(wx+d[1],wy+d[2],wz)
+                            local nflags=dfhack.maps.getTileFlags(npos)
+                            if nflags and not nflags.hidden
+                                and nflags.flow_size == 0 and walkable(npos)
+                                and reachable(npos) then
+                                sample[#sample+1]={
+                                    x=wx,y=wy,z=wz,depth=des.flow_size,
+                                    adjacent={x=npos.x,y=npos.y,z=npos.z}}
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Well components currently available for construction, by exact ids.
+    local components={buckets={},chains={},mechanisms={},blocks={},boulders={}}
+    local typemap={[df.item_type.BUCKET]='buckets',
+                   [df.item_type.CHAIN]='chains',
+                   [df.item_type.TRAPPARTS]='mechanisms',
+                   [df.item_type.BLOCKS]='blocks',
+                   [df.item_type.BOULDER]='boulders'}
+    for _,item in ipairs(df.global.world.items.other.IN_PLAY) do
+        local f=item.flags
+        local key=typemap[item:getType()]
+        if key and not (f.rotten or f.trader or f.forbid or f.garbage_collect
+                or f.hostile or f.in_job or f.in_building) then
+            local bucket=components[key]
+            if #bucket < 20 then bucket[#bucket+1]=item.id end
+        end
+    end
+    for _,ids in pairs(components) do table.sort(ids) end
+
+    state.water={wells=wells,source_zones=source_zones,visible_tiles=counts,
+        fresh_access_sample=fresh_access,
+        stagnant_access_sample=stagnant_access,components=components}
 end)
 
 -- ---- agriculture ------------------------------------------------------------

@@ -9,6 +9,8 @@ from agent.farm_recovery_governor import FarmRecoveryGovernor
 from agent.container_recovery_governor import ContainerRecoveryGovernor
 from agent.trade_recovery_governor import TradeRecoveryGovernor
 from agent.hospital_recovery_governor import HospitalRecoveryGovernor
+from agent.treatment_recovery_governor import TreatmentRecoveryGovernor
+from harness.scenarios import SCENARIOS, apply_injury
 from agent.strategy import StrategyRecord, control_strategy
 from harness.actions import (assign_broker, assign_hospital_doctor,
                              assign_manager,
@@ -25,7 +27,9 @@ from harness.actions import (assign_broker, assign_hospital_doctor,
                              prioritize_trader_job,
                              prioritize_workshop_construction, protect_seeds,
                              request_trader,
-                             set_farm_crop)
+                             set_farm_crop,
+                             designate_water_source, make_well_components,
+                             ACTIONS)
 from harness.survival import (assess_procedures, build_operational_context,
                               derive_survival_metrics, handbook_digest,
                               load_handbook, write_handbook_snapshot)
@@ -61,7 +65,7 @@ def _state(**stock_overrides):
 class HandbookTests(unittest.TestCase):
     def test_handbook_is_versioned_unique_and_snapshottable(self):
         handbook = load_handbook()
-        self.assertEqual(handbook["version"], 12)
+        self.assertEqual(handbook["version"], 13)
         self.assertEqual(len(handbook_digest(handbook)), 64)
         with tempfile.TemporaryDirectory() as d:
             path = write_handbook_snapshot(d, handbook)
@@ -844,6 +848,204 @@ class ContainerRecoveryGovernorTests(unittest.TestCase):
 
         self.assertEqual([a.tool for a in plan.actions], ["pass_turn"])
         self.assertIn("True", plan.strategy["assessment"])
+
+
+class WaterChainTests(unittest.TestCase):
+    def test_water_procedure_stays_unavailable_until_live_verified(self):
+        state = _state()
+        state["water"] = {
+            "wells": [], "visible_tiles": {"fresh": 6, "salt": 0,
+                                           "stagnant": 2},
+            "fresh_access_sample": [{"x": 10, "y": 12, "z": 100,
+                                     "depth": 4,
+                                     "adjacent": {"x": 10, "y": 13,
+                                                  "z": 100}}],
+            "components": {"buckets": [], "chains": [7],
+                           "mechanisms": [], "blocks": [],
+                           "boulders": [30, 31]},
+        }
+        procedures = {p["id"]: p for p in assess_procedures(state)}
+        water = procedures["establish_clean_water"]
+        # Even with every requirement observable and met, an unverified
+        # procedure must not be offered as feasible: no live micro-scenario
+        # has yet demonstrated the chain on the pinned runtime.
+        self.assertEqual(water["implementation_status"], "unverified")
+        self.assertEqual(water["feasibility"], "unavailable")
+
+    def test_every_water_tool_is_dispatchable_and_schema_backed(self):
+        from agent.schemas import SCHEMAS_BY_NAME
+        handbook = load_handbook()
+        water = next(p for p in handbook["procedures"]
+                     if p["id"] == "establish_clean_water")
+        for tool in water["action_tools"]:
+            self.assertIn(tool, ACTIONS)
+            self.assertIn(tool, SCHEMAS_BY_NAME)
+
+    def test_stone_order_binds_an_observed_material_token(self):
+        class FakeClient:
+            def __init__(self):
+                self.observations = iter([{
+                    "shops": 1, "inputs": 3, "pending": 0,
+                    "max_order_id": -1, "output_ids": [],
+                    "material": "INORGANIC:LIMESTONE", "material_item": 2164,
+                }, {
+                    "pending": 1, "orders": [{
+                        "id": 0, "amount_left": 1, "amount_total": 1,
+                        "validated": False, "active": False,
+                        "newly_created": True,
+                    }],
+                }])
+
+            def lua(self, code):
+                return json.dumps(next(self.observations))
+
+            def run_command(self, *args):
+                self.command = args
+                return "ok"
+
+        client = FakeClient()
+        receipt = make_well_components(client, "block", 1)
+        # An unbound stone order validates as false forever and never
+        # reaches a workshop, so the material must come from an item the
+        # observer actually saw.
+        self.assertEqual(json.loads(client.command[1]), {
+            "job": "ConstructBlocks", "amount_total": 1,
+            "material": "INORGANIC:LIMESTONE",
+        })
+        self.assertEqual(receipt["material_source_item_id"], 2164)
+
+    def test_stone_order_refuses_when_no_material_is_decodable(self):
+        class FakeClient:
+            def lua(self, code):
+                return json.dumps({
+                    "shops": 1, "inputs": 2, "pending": 0,
+                    "max_order_id": -1, "output_ids": [],
+                    "material": None, "material_item": None,
+                })
+
+        with self.assertRaises(Exception):
+            make_well_components(FakeClient(), "block", 1)
+
+    def test_bucket_order_is_bound_to_wood(self):
+        class FakeClient:
+            def __init__(self):
+                self.observations = iter([{
+                    "shops": 1, "inputs": 3, "pending": 0,
+                    "max_order_id": -1, "output_ids": [],
+                    "material": "PLANT_MAT:OAK:WOOD", "material_item": 5,
+                }, {
+                    "pending": 1, "orders": [{
+                        "id": 0, "amount_left": 1, "amount_total": 1,
+                        "validated": False, "active": False,
+                        "newly_created": True,
+                    }],
+                }])
+
+            def lua(self, code):
+                return json.dumps(next(self.observations))
+
+            def run_command(self, *args):
+                self.command = args
+                return "ok"
+
+        client = FakeClient()
+        receipt = make_well_components(client, "bucket", 1)
+        self.assertEqual(json.loads(client.command[1]), {
+            "job": "MakeBucket", "amount_total": 1,
+            "material_category": ["wood"],
+        })
+        self.assertEqual(receipt["purpose"], "well_component")
+
+    def test_well_component_rejects_unknown_kind_and_unbounded_qty(self):
+        with self.assertRaises(Exception):
+            make_well_components(None, "barrel", 1)
+        with self.assertRaises(Exception):
+            make_well_components(None, "block", 0)
+        with self.assertRaises(Exception):
+            make_well_components(None, "block", 6)
+
+    def test_water_source_zone_footprint_is_bounded(self):
+        with self.assertRaises(Exception):
+            designate_water_source(None, 1, 2, 3, width=6, height=1)
+        with self.assertRaises(Exception):
+            designate_water_source(None, 1, 2, 3, width=1, height=0)
+
+    def test_briefing_carries_water_observation(self):
+        from harness import briefing as briefing_mod
+        state = _state()
+        state["water"] = {
+            "wells": [{"id": 4, "x": 1, "y": 2, "z": 3, "complete": False,
+                       "reachable": True}],
+            "visible_tiles": {"fresh": 5, "salt": 0, "stagnant": 1},
+            "fresh_access_sample": [],
+            "components": {"buckets": [9], "chains": [], "mechanisms": [],
+                           "blocks": [], "boulders": []},
+        }
+        briefing = briefing_mod.build(state, [], None, 3)
+        self.assertEqual(briefing["water"]["visible_tiles"]["fresh"], 5)
+        markdown = briefing_mod.render_markdown(briefing)
+        self.assertIn("Water: visible tiles fresh=5", markdown)
+        self.assertIn("buckets=1", markdown)
+
+
+class TreatmentRecoveryGovernorTests(unittest.TestCase):
+    @staticmethod
+    def _briefing(patients, doctor=True, wells=(), zones=(), sample=()):
+        occupations = ([{"type": "DOCTOR", "unit_alive": True}]
+                       if doctor else [])
+        return {
+            "healthcare": {
+                "patients": list(patients),
+                "medical_jobs": [],
+                "locations": [{"id": 0, "occupations": occupations}],
+                "doctor_candidates": [{"id": 207}],
+            },
+            "water": {"wells": list(wells), "source_zones": list(zones),
+                      "fresh_access_sample": list(sample)},
+        }
+
+    def test_no_patient_is_a_pass_not_a_claim(self):
+        gov = TreatmentRecoveryGovernor()
+        plan = gov.act({}, "", self._briefing([]), {})
+        self.assertEqual([a.tool for a in plan.actions], ["pass_turn"])
+        self.assertIn("no_observed_patient", plan.strategy["assessment"])
+
+    def test_patient_without_doctor_assigns_ranked_candidate(self):
+        briefing = self._briefing(
+            [{"id": 210, "wound_count": 2, "health_requests": ["rq_diagnosis"]}],
+            doctor=False)
+        plan = TreatmentRecoveryGovernor().act({}, "", briefing, {})
+        self.assertEqual(plan.actions[0].tool, "assign_hospital_doctor")
+        self.assertEqual(plan.actions[0].params["dwarf_id"], 207)
+
+    def test_patient_without_water_designates_verified_source(self):
+        briefing = self._briefing(
+            [{"id": 210, "wound_count": 2, "health_requests": []}],
+            sample=[{"x": 8, "y": 9, "z": 100, "depth": 5,
+                     "adjacent": {"x": 8, "y": 10, "z": 100}}])
+        plan = TreatmentRecoveryGovernor().act({}, "", briefing, {})
+        self.assertEqual(plan.actions[0].tool, "designate_water_source")
+        self.assertEqual(plan.actions[0].params, {"x": 8, "y": 9, "z": 100})
+
+    def test_patient_with_water_and_doctor_lets_native_chain_run(self):
+        briefing = self._briefing(
+            [{"id": 210, "wound_count": 1, "health_requests": []}],
+            wells=[{"id": 5, "complete": True}])
+        plan = TreatmentRecoveryGovernor().act({}, "", briefing, {})
+        self.assertEqual([a.tool for a in plan.actions], ["pass_turn"])
+        self.assertIn("patient_flagged_awaiting_native_jobs",
+                      plan.strategy["assessment"])
+
+
+class InjuryFixtureTests(unittest.TestCase):
+    def test_injury_scenario_is_registered(self):
+        self.assertIn("injury", SCENARIOS)
+
+    def test_drop_height_is_bounded(self):
+        with self.assertRaises(ValueError):
+            apply_injury(None, drop_height=0)
+        with self.assertRaises(ValueError):
+            apply_injury(None, drop_height=4)
 
 
 if __name__ == "__main__":

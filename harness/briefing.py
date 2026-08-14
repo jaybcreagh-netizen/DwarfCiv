@@ -49,6 +49,7 @@ def build(state: dict, events: list[dict], prev_state: dict | None,
         "logistics": state.get("logistics"),
         "trade": state.get("trade"),
         "healthcare": state.get("healthcare"),
+        "water": state.get("water"),
         "agriculture": state.get("agriculture"),
         "threats": state.get("threats"),
         "squads": state.get("squads"),
@@ -263,6 +264,17 @@ def render_markdown(briefing: dict) -> str:
             f"occupations={loc.get('occupations')} "
             f"need_more={loc.get('need_more')}"
             for loc in hospital_locations[:4]))
+    water = briefing.get("water") or {}
+    if water:
+        tiles = water.get("visible_tiles") or {}
+        components = water.get("components") or {}
+        add(f"- Water: visible tiles fresh={tiles.get('fresh', 0)} "
+            f"salt={tiles.get('salt', 0)} stagnant={tiles.get('stagnant', 0)}; "
+            f"wells={len(water.get('wells') or [])}; reachable fresh-edge "
+            f"sample={len(water.get('fresh_access_sample') or [])}; "
+            "well components available: " + ", ".join(
+                f"{kind}={len(ids)}"
+                for kind, ids in sorted(components.items())))
     agriculture = briefing.get("agriculture") or {}
     seed_types = agriculture.get("available_seed_types") or []
     farms = operations.get("farms") or []

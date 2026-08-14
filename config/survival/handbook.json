@@ -1,6 +1,6 @@
 {
   "id": "dwarfciv-survival-handbook",
-  "version": 12,
+  "version": 13,
   "status": "curated_operational_guidance",
   "purpose": "Teach a governor the dependency structure of fortress survival without making value choices for it.",
   "epistemic_rule": "Treat observations and execution receipts as ground truth. Handbook statements are planning guidance and must be checked against the running DF version.",
@@ -378,6 +378,37 @@
       "recovery": "If access stalls, verify the native mining work detail and pick acquisition. If furniture stalls, repair the carpenter/wood/manager-order chain. If metadata is missing after reload, reconstruct ids from the exact native hospital footprint rather than creating a duplicate. Do not enable triage claims until a controlled injured patient produces verified recovery, diagnosis, and treatment jobs."
     },
     {
+      "id": "establish_clean_water",
+      "goal": "Establish a verified reachable fresh-water supply, preferably a well, for drinking and patient care.",
+      "horizon": "tactical",
+      "implementation_status": "unverified",
+      "action_tool": "build_well",
+      "action_tools": [
+        "build_workshop",
+        "prioritize_workshop_construction",
+        "make_well_components",
+        "prepare_well_site",
+        "assign_labor",
+        "build_well",
+        "designate_water_source"
+      ],
+      "requirements": [
+        {
+          "path": "water.fresh_access_sample",
+          "op": "nonempty",
+          "description": "At least one visible fresh-water tile with a reachable adjacent floor tile is observed"
+        },
+        {
+          "path": "dwarves",
+          "op": "nonempty",
+          "description": "A living citizen can mine the shaft and haul components"
+        }
+      ],
+      "labor_guidance": "Fresh, salt, and stagnant water are different resources: wounds cleaned with stagnant water risk infection, so prefer a well over a fresh source. The chain is mason and mechanic workshops, one block, one mechanism, one wooden bucket, and one chain, then a channeled shaft beside fresh water and the well built over it. A water-source zone over fresh water is the faster fallback for drinking and hauling. Never reveal hidden tiles while siting.",
+      "success_evidence": "The well building completes over water observed directly below it, or a native water-source zone contains visible fresh tiles, and citizens later draw water from it in observed jobs.",
+      "recovery": "If no fresh surface water is visible, do not dig blind for an aquifer; fall back to a bounded water-source zone on the freshest available source and record stagnant risk. If a component is missing, queue its exact verified order first."
+    },
+    {
       "id": "validate_clinical_treatment",
       "goal": "Demonstrate that an injured citizen is recovered, diagnosed, supplied, and treated by the native hospital chain.",
       "horizon": "tactical",
@@ -473,6 +504,18 @@
       "title": "DFHack: stockpiles",
       "url": "https://docs.dfhack.org/en/stable/docs/tools/stockpiles.html",
       "use": "Version-pinned typed stockpile presets and exact settings import semantics."
+    },
+    {
+      "id": "dfwiki_well",
+      "title": "Dwarf Fortress Wiki: Well",
+      "url": "https://new.dwarffortresswiki.org/index.php/Well",
+      "use": "Well components (block, mechanism, bucket, chain), placement over water, and clean-water behaviour."
+    },
+    {
+      "id": "dfwiki_water",
+      "title": "Dwarf Fortress Wiki: Water",
+      "url": "https://new.dwarffortresswiki.org/index.php/Water",
+      "use": "Fresh, salt, and stagnant water distinctions, drinking-water zones, and infection risk from unclean sources."
     }
   ]
 }

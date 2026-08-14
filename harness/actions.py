@@ -533,6 +533,324 @@ def make_hospital_furniture(client: DFHackClient, kind: str,
                               "output_item_ids_before": pre["output_ids"]}}
 
 
+# This DFHack build types tile_designation.liquid_type as a boolean
+# (false = water, true = magma) rather than the tile_liquid enum, so an
+# enum comparison silently matches nothing. Every water check shares this
+# helper and accepts either representation.
+_LUA_IS_WATER = """
+        local function is_water(des)
+            local lt=des.liquid_type
+            if type(lt) == 'boolean' then return not lt end
+            return lt == df.tile_liquid.Water
+        end
+"""
+
+
+_WELL_COMPONENT_SPECS = {
+    # kind: (job, output item type, workshop subtype, input item type,
+    #        bind material category to wood)
+    "block": ("ConstructBlocks", "BLOCKS", "Masons", "BOULDER", False),
+    "mechanism": ("ConstructMechanisms", "TRAPPARTS", "Mechanics",
+                  "BOULDER", False),
+    "bucket": ("MakeBucket", "BUCKET", "Carpenters", "WOOD", True),
+}
+
+
+def make_well_components(client: DFHackClient, kind: str,
+                         qty: int = 1) -> dict:
+    """Queue one bounded well-component order at its verified workshop.
+
+    Stone jobs are bound to the exact material token of an observed
+    available boulder. An unbound stone order is accepted by DF and then
+    sits at ``validated=false`` forever, producing no workshop job — the
+    same silent failure an unspecified ``MakeBarrel`` once produced. The
+    completion evidence remains a new physical output item id, never the
+    order.
+    """
+    if kind not in _WELL_COMPONENT_SPECS:
+        raise DFError(
+            f"well component kind must be one of {sorted(_WELL_COMPONENT_SPECS)}")
+    if not (1 <= qty <= 5):
+        raise DFError("well component quantity must be between 1 and 5")
+    job, output_type, shop_subtype, input_type, bind_wood = \
+        _WELL_COMPONENT_SPECS[kind]
+    pre = _json_result(client.lua(f"""
+        local json=require('json')
+        local shops,inputs,pending,max_order_id=0,0,0,-1
+        local output_ids={{}}
+        assert(df.job_type.{job}, 'unknown job type {job}')
+        for _,b in ipairs(df.global.world.buildings.all) do
+            if b:getType() == df.building_type.Workshop
+                and b:getSubtype() == df.workshop_type.{shop_subtype}
+                and b:getBuildStage() >= b:getMaxBuildStage() then
+                shops=shops+1
+            end
+        end
+        local material,material_item=nil,nil
+        for _,i in ipairs(df.global.world.items.other.IN_PLAY) do
+            local f=i.flags
+            if not (f.forbid or f.rotten or f.trader or f.hostile
+                    or f.in_job or f.in_building) then
+                if i:getType() == df.item_type.{input_type} then
+                    inputs=inputs+math.max(1,i:getStackSize())
+                    if not material then
+                        local info=dfhack.matinfo.decode(i.mat_type,
+                                                         i.mat_index)
+                        if info then
+                            material=info:getToken()
+                            material_item=i.id
+                        end
+                    end
+                elseif i:getType() == df.item_type.{output_type} then
+                    output_ids[#output_ids+1]=i.id
+                end
+            end
+        end
+        for _,o in ipairs(df.global.world.manager_orders.all) do
+            if o.id > max_order_id then max_order_id=o.id end
+            if o.job_type == df.job_type.{job} then
+                pending=pending+o.amount_left
+            end
+        end
+        table.sort(output_ids)
+        print(json.encode({{shops=shops,inputs=inputs,pending=pending,
+            max_order_id=max_order_id,output_ids=output_ids,
+            material=material,material_item=material_item}}))
+    """))
+    if pre["shops"] < 1:
+        raise DFError(f"cannot make {kind}: no completed {shop_subtype} "
+                      "workshop exists")
+    if pre["inputs"] < 1:
+        raise DFError(f"cannot make {kind}: no available "
+                      f"{input_type.lower()} exists")
+    order: dict = {"job": job, "amount_total": int(qty)}
+    if bind_wood:
+        order["material_category"] = ["wood"]
+    else:
+        if not pre.get("material"):
+            raise DFError(
+                f"cannot make {kind}: no decodable material on any available "
+                f"{input_type.lower()}")
+        order["material"] = pre["material"]
+    command = client.run_command("workorder", json.dumps(order))
+    post = _json_result(client.lua(f"""
+        local json=require('json')
+        local pending=0
+        local orders={{}}
+        for _,o in ipairs(df.global.world.manager_orders.all) do
+            if o.job_type == df.job_type.{job} then
+                pending=pending+o.amount_left
+                orders[#orders+1]={{id=o.id,amount_left=o.amount_left,
+                    amount_total=o.amount_total,
+                    validated=o.status.validated,active=o.status.active,
+                    newly_created=o.id > {int(pre['max_order_id'])}}}
+            end
+        end
+        print(json.encode({{pending=pending,orders=orders}}))
+    """))
+    delta = post["pending"] - pre["pending"]
+    if delta <= 0 or not any(o.get("newly_created") for o in post["orders"]):
+        raise DFError(f"{job} order was not created: {command.strip()}")
+    return {"status": "applied", "effect": "manager_order_created",
+            "purpose": "well_component", "kind": kind, "job": job,
+            "requested": qty, "order_delta": delta,
+            "material": order.get("material"),
+            "material_category": order.get("material_category"),
+            "material_source_item_id": pre.get("material_item"),
+            "pending_after": post["pending"], "orders": post["orders"],
+            "preconditions": {
+                f"completed_{shop_subtype.lower()}_workshops": pre["shops"],
+                f"available_{input_type.lower()}": pre["inputs"],
+                "output_item_ids_before": pre["output_ids"]}}
+
+
+def prepare_well_site(client: DFHackClient, x: int, y: int, z: int) -> dict:
+    """Designate one exact visible channel tile beside observed fresh water.
+
+    Channeling opens a shaft the adjacent water refills, which a well can
+    later be built over. The tile must be a visible walkable floor with at
+    least one orthogonal visible fresh-water neighbour; hidden geology is
+    never inspected.
+    """
+    return _json_result(client.lua(f"""
+        local json=require('json')
+        {_LUA_IS_WATER}
+        local pos=xyz2pos({int(x)},{int(y)},{int(z)})
+        local flags=dfhack.maps.getTileFlags(pos)
+        assert(flags, 'target tile is outside the map')
+        assert(not flags.hidden, 'target tile is hidden; refusing to reveal')
+        assert(flags.flow_size == 0, 'target tile already holds liquid')
+        local tt=dfhack.maps.getTileType(pos)
+        local shape=df.tiletype.attrs[tt].shape
+        assert(df.tiletype_shape.attrs[shape].basic_shape
+            == df.tiletype_shape_basic.Floor, 'target tile is not a floor')
+        local water=nil
+        for _,d in ipairs({{{{0,-1}},{{0,1}},{{-1,0}},{{1,0}}}}) do
+            local npos=xyz2pos(pos.x+d[1],pos.y+d[2],pos.z)
+            local ndes=dfhack.maps.getTileFlags(npos)
+            if ndes and not ndes.hidden and ndes.flow_size > 0
+                and is_water(ndes)
+                and not ndes.water_salt and not ndes.water_stagnant then
+                water={{x=npos.x,y=npos.y,z=npos.z,depth=ndes.flow_size}}
+                break
+            end
+        end
+        assert(water, 'no visible fresh water orthogonally adjacent')
+        local block=dfhack.maps.ensureTileBlock(pos)
+        local des=block.designation[pos.x % 16][pos.y % 16]
+        assert(des.dig == df.tile_dig_designation.No,
+            'tile already carries a dig designation')
+        des.dig=df.tile_dig_designation.Channel
+        block.flags.designated=true
+        dfhack.job.checkDesignationsNow()
+        print(json.encode({{status='applied',effect='well_shaft_designated',
+            pos={{x=pos.x,y=pos.y,z=pos.z}},adjacent_fresh_water=water,
+            designation='channel'}}))
+    """))
+
+
+def build_well(client: DFHackClient, x: int, y: int, z: int) -> dict:
+    """Construct one native well at an exact tile from exact components.
+
+    Requires visible fresh water directly below within three z-levels and
+    one available block, mechanism, bucket, and chain, whose exact item ids
+    become part of the receipt. DF's own construction validation remains the
+    final authority on placement.
+    """
+    return _json_result(client.lua(f"""
+        local json=require('json')
+        local buildings=require('dfhack.buildings')
+        {_LUA_IS_WATER}
+        local pos=xyz2pos({int(x)},{int(y)},{int(z)})
+        local flags=dfhack.maps.getTileFlags(pos)
+        assert(flags, 'target tile is outside the map')
+        assert(not flags.hidden, 'target tile is hidden; refusing to reveal')
+        local water=nil
+        for dz=1,3 do
+            local below=xyz2pos(pos.x,pos.y,pos.z-dz)
+            local bdes=dfhack.maps.getTileFlags(below)
+            if bdes and not bdes.hidden and bdes.flow_size > 0
+                and is_water(bdes) and not bdes.water_salt then
+                water={{x=below.x,y=below.y,z=below.z,
+                    depth=bdes.flow_size,depth_below=dz,
+                    stagnant=bdes.water_stagnant}}
+                break
+            end
+            if bdes and not bdes.hidden then
+                local btt=dfhack.maps.getTileType(below)
+                local bshape=df.tiletype.attrs[btt].shape
+                if df.tiletype_shape.attrs[bshape].basic_shape
+                    ~= df.tiletype_shape_basic.Open then
+                    break
+                end
+            end
+        end
+        assert(water, 'no visible fresh water within three tiles below')
+        local wanted={{BLOCKS='block',TRAPPARTS='mechanism',
+                      BUCKET='bucket',CHAIN='chain'}}
+        local picked={{}}
+        for _,i in ipairs(df.global.world.items.other.IN_PLAY) do
+            local f=i.flags
+            local name=df.item_type[i:getType()]
+            local role=wanted[name]
+            if role and not picked[role]
+                and not (f.forbid or f.rotten or f.trader or f.hostile
+                         or f.in_job or f.in_building) then
+                picked[role]=i
+            end
+        end
+        for _,role in pairs(wanted) do
+            assert(picked[role], 'no available '..role..' for the well')
+        end
+        local b,err=buildings.constructBuilding{{
+            pos=pos,type=df.building_type.Well,
+            items={{picked.block,picked.mechanism,
+                    picked.bucket,picked.chain}}}}
+        assert(b, 'could not place well: '..tostring(err))
+        local job=#b.jobs > 0 and b.jobs[0] or nil
+        assert(job and job.job_type == df.job_type.ConstructBuilding,
+            'well has no native construction job')
+        print(json.encode({{status='applied',effect='well_designated',
+            well_id=b.id,pos={{x=b.centerx,y=b.centery,z=b.z}},
+            build_stage=b:getBuildStage(),
+            max_build_stage=b:getMaxBuildStage(),
+            water_below=water,
+            component_item_ids={{block=picked.block.id,
+                mechanism=picked.mechanism.id,bucket=picked.bucket.id,
+                chain=picked.chain.id}},
+            job_id=job.id,suspended=job.flags.suspend}}))
+    """))
+
+
+def designate_water_source(client: DFHackClient, x: int, y: int, z: int,
+                           width: int = 1, height: int = 1,
+                           allow_stagnant: bool = False) -> dict:
+    """Create one bounded native water-source zone over visible water.
+
+    The footprint must contain visible fresh water. Where the map offers
+    only stagnant water the caller must pass ``allow_stagnant`` explicitly:
+    stagnant water carries infection risk for wound cleaning, so accepting
+    it is a survival tradeoff the governor makes on the record, not a
+    silent substitution. The receipt always reports the water quality
+    actually zoned.
+    """
+    if not (1 <= width <= 5 and 1 <= height <= 5):
+        raise DFError("water source zone must be between 1x1 and 5x5")
+    return _json_result(client.lua(f"""
+        local json=require('json')
+        local quickfort=reqscript('quickfort')
+        {_LUA_IS_WATER}
+        local x1,y1,z1={int(x)},{int(y)},{int(z)}
+        local w,h={int(width)},{int(height)}
+        local allow_stagnant={str(bool(allow_stagnant)).lower()}
+        local fresh,stagnant,salt=0,0,0
+        for yy=y1,y1+h-1 do
+            for xx=x1,x1+w-1 do
+                local des=dfhack.maps.getTileFlags(xyz2pos(xx,yy,z1))
+                assert(des, 'zone tile is outside the map')
+                assert(not des.hidden, 'zone tile is hidden; refusing')
+                if des.flow_size > 0 and is_water(des) then
+                    if des.water_salt then salt=salt+1
+                    elseif des.water_stagnant then stagnant=stagnant+1
+                    else fresh=fresh+1 end
+                end
+            end
+        end
+        assert(fresh > 0 or (allow_stagnant and stagnant > 0),
+            'zone footprint holds no visible fresh water'
+            ..' (stagnant='..stagnant..', salt='..salt..'); pass'
+            ..' allow_stagnant to accept infection risk explicitly')
+        local before={{}}
+        for _,b in ipairs(df.global.world.buildings.all) do
+            if df.building_civzonest:is_instance(b) then before[b.id]=true end
+        end
+        local row=('w'):rep(w)
+        local rows={{}}
+        for i=1,h do rows[i]=row end
+        local data=table.concat(rows,'\\n')
+        quickfort.apply_blueprint{{mode='zone',data=data,
+            pos=xyz2pos(x1,y1,z1),dry_run=true}}
+        quickfort.apply_blueprint{{mode='zone',data=data,
+            pos=xyz2pos(x1,y1,z1),dry_run=false}}
+        local zone=nil
+        for _,b in ipairs(df.global.world.buildings.all) do
+            if df.building_civzonest:is_instance(b) and not before[b.id]
+                and b.type == df.civzone_type.WaterSource then
+                zone=b; break
+            end
+        end
+        assert(zone, 'no new native water-source zone appeared')
+        print(json.encode({{status='applied',effect='water_source_zoned',
+            zone_id=zone.id,active=zone.spec_sub_flag.active,
+            pos={{x=x1,y=y1,z=z1}},width=w,height=h,
+            fresh_water_tiles=fresh,stagnant_water_tiles=stagnant,
+            salt_water_tiles=salt,
+            water_quality=(fresh > 0) and 'fresh' or 'stagnant',
+            clean_water=(fresh > 0),
+            infection_risk_accepted=(fresh == 0 and stagnant > 0)}}))
+    """))
+
+
 def make_trade_goods(client: DFHackClient, qty: int) -> dict:
     """Queue bounded native wooden crafts for the seasonal export chain."""
     if qty < 1:
@@ -619,7 +937,8 @@ def make_trade_goods(client: DFHackClient, qty: int) -> dict:
 
 def build_workshop(client: DFHackClient, workshop: str) -> dict:
     """Place one bounded wooden survival workshop on visible surface floor."""
-    allowed = {"Carpenters", "Still", "Fishery", "Craftsdwarfs"}
+    allowed = {"Carpenters", "Still", "Fishery", "Craftsdwarfs",
+               "Masons", "Mechanics"}
     if workshop not in allowed:
         raise DFError(f"workshop must be one of {sorted(allowed)}")
     return _json_result(client.lua(f"""
@@ -1937,6 +2256,10 @@ ACTIONS = {
     "prepare_fish": prepare_fish,
     "make_barrels": make_barrels,
     "make_hospital_furniture": make_hospital_furniture,
+    "make_well_components": make_well_components,
+    "prepare_well_site": prepare_well_site,
+    "build_well": build_well,
+    "designate_water_source": designate_water_source,
     "make_trade_goods": make_trade_goods,
     "build_workshop": build_workshop,
     "build_stockpile": build_stockpile,

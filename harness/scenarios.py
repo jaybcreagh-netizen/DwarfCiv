@@ -14,7 +14,7 @@ import json
 from .dfhack_client import DFHackClient
 
 
-SCENARIOS = ("baseline", "scarcity")
+SCENARIOS = ("baseline", "scarcity", "injury")
 
 
 def _add_completed_workshop(client: DFHackClient, subtype: str,
@@ -81,9 +81,161 @@ def _add_completed_workshop(client: DFHackClient, subtype: str,
 def apply_scenario(client: DFHackClient, name: str) -> dict:
     if name == "baseline":
         return {"name": name, "mechanism": "unmodified restored embark"}
+    if name == "injury":
+        return apply_injury(client)
     if name != "scarcity":
         raise ValueError(f"unknown scenario {name!r}; choose from {SCENARIOS}")
     return apply_scarcity(client)
+
+
+def apply_injury(client: DFHackClient, *, drop_height: int = 2) -> dict:
+    """Injure exactly one deliberately selected citizen by a bounded fall.
+
+    This is the controlled fixture behind clinical-treatment validation: a
+    hospital chain cannot be marked live-verified until a real injured
+    patient moves through recovery, diagnosis, and treatment. The mechanism
+    is physical — the chosen unit is placed ``drop_height`` z-levels above a
+    verified dry, reachable floor tile and takes DF's native fall damage
+    when the simulation advances — so wounds, health flags, and medical jobs
+    are all produced by the game, never written directly.
+
+    Bounds: exactly one adult citizen; bottleneck roles (miner, woodcutter,
+    fisher, manager, broker, doctor occupations) are excluded from
+    selection; the height defaults to the minimum that reliably injures
+    without lethal intent; the drop site must be reachable by another
+    citizen so rescue is physically possible. Severity remains stochastic:
+    the first post-fall observation must confirm ``needs_healthcare`` before
+    any treatment claim, and a harmless landing is recorded as fixture
+    ``no_effect``, not retried blindly.
+    """
+    if not (1 <= drop_height <= 3):
+        raise ValueError("injury fixture drop height must be 1..3 z-levels")
+    out = client.lua(f"""
+        local json = require('json')
+        local utils = require('utils')
+        local manager = dfhack.units.getUnitByNobleRole('manager')
+        local broker = dfhack.units.getUnitByNobleRole('broker')
+        local occupied = {{}}
+        for _,occ in ipairs(df.global.world.occupations.all) do
+            if occ.unit_id and occ.unit_id ~= -1 then
+                occupied[occ.unit_id] = true
+            end
+        end
+        local critical = {{df.unit_labor.MINE, df.unit_labor.CUTWOOD,
+                           df.unit_labor.FISH}}
+        local function is_bottleneck(u)
+            if (manager and manager.id == u.id)
+                or (broker and broker.id == u.id)
+                or occupied[u.id] then return true end
+            for _,detail in ipairs(
+                    df.global.plotinfo.labor_info.work_details) do
+                if utils.binsearch(detail.assigned_units, u.id) then
+                    for _,labor in ipairs(critical) do
+                        if detail.allowed_labors[labor] then return true end
+                    end
+                end
+            end
+            return false
+        end
+        local subject, fallback = nil, nil
+        for _,u in ipairs(df.global.world.units.active) do
+            if dfhack.units.isCitizen(u, true) and not dfhack.units.isDead(u)
+                and dfhack.units.isAdult(u)
+                and u.health and not u.health.flags.needs_healthcare then
+                fallback = fallback or u
+                if not is_bottleneck(u)
+                    and (not subject or u.id < subject.id) then
+                    subject = u
+                end
+            end
+        end
+        subject = subject or fallback
+        assert(subject, 'no eligible healthy adult citizen for the fixture')
+        local witness = nil
+        for _,u in ipairs(df.global.world.units.active) do
+            if u.id ~= subject.id and dfhack.units.isCitizen(u, true)
+                and not dfhack.units.isDead(u)
+                and dfhack.units.isAdult(u) then witness = u; break end
+        end
+        assert(witness, 'fixture requires a second citizen able to rescue')
+        local anchor = nil
+        for _,b in ipairs(df.global.world.buildings.all) do
+            if b:getType() == df.building_type.Wagon then
+                anchor = xyz2pos(b.centerx, b.centery, b.z); break
+            end
+        end
+        anchor = anchor or witness.pos
+        local height = {int(drop_height)}
+        local function open_space(pos)
+            local flags = dfhack.maps.getTileFlags(pos)
+            if not flags or flags.hidden or flags.flow_size > 0 then
+                return false
+            end
+            local tt = dfhack.maps.getTileType(pos)
+            local shape = df.tiletype.attrs[tt].shape
+            return df.tiletype_shape.attrs[shape].basic_shape
+                == df.tiletype_shape_basic.Open
+        end
+        local function dry_floor(pos)
+            local flags, occ = dfhack.maps.getTileFlags(pos)
+            if not flags or not occ or flags.hidden
+                or flags.flow_size > 0 or occ.building ~= 0 then
+                return false
+            end
+            local tt = dfhack.maps.getTileType(pos)
+            local shape = df.tiletype.attrs[tt].shape
+            return df.tiletype_shape.attrs[shape].basic_shape
+                == df.tiletype_shape_basic.Floor
+        end
+        local site = nil
+        for radius = 3, 25 do
+            for dy = -radius, radius do
+                for dx = -radius, radius do
+                    if math.abs(dx) == radius or math.abs(dy) == radius then
+                        local pos = xyz2pos(anchor.x+dx, anchor.y+dy, anchor.z)
+                        if dry_floor(pos)
+                            and dfhack.maps.canWalkBetween(witness.pos, pos)
+                        then
+                            local clear = true
+                            for dz = 1, height do
+                                if not open_space(
+                                        xyz2pos(pos.x, pos.y, pos.z+dz)) then
+                                    clear = false; break
+                                end
+                            end
+                            if clear then site = pos end
+                        end
+                    end
+                    if site then break end
+                end
+                if site then break end
+            end
+            if site then break end
+        end
+        assert(site, 'no verified dry reachable drop site near the wagon')
+        local from = {{x=subject.pos.x, y=subject.pos.y, z=subject.pos.z}}
+        local wounds_before = #subject.body.wounds
+        local ok = dfhack.units.teleport(
+            subject, xyz2pos(site.x, site.y, site.z + height))
+        assert(ok, 'teleport into the drop column failed')
+        print(json.encode({{name='injury',
+            mechanism='bounded native fall: one citizen, verified dry '
+                .. 'reachable landing, damage resolved by DF physics',
+            subject={{id=subject.id,
+                name=dfhack.df2utf(dfhack.units.getReadableName(subject))}},
+            from_pos=from,
+            drop_site={{x=site.x, y=site.y, z=site.z}},
+            drop_height=height,
+            wounds_before=wounds_before,
+            excluded_roles={{'miner','woodcutter','fisher','manager',
+                             'broker','occupation_holder'}},
+            postcondition='needs_healthcare must be observed after the '
+                .. 'fall before any treatment claim'}}))
+    """)
+    try:
+        return json.loads(out.strip())
+    except json.JSONDecodeError:
+        return {"name": "injury", "raw_result": out.strip()}
 
 
 def apply_scarcity(client: DFHackClient, *, food_per_citizen: int = 1,
@@ -239,4 +391,4 @@ def apply_scarcity(client: DFHackClient, *, food_per_citizen: int = 1,
     return result
 
 
-__all__ = ["SCENARIOS", "apply_scenario", "apply_scarcity"]
+__all__ = ["SCENARIOS", "apply_scenario", "apply_scarcity", "apply_injury"]
